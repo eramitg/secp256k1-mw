@@ -13,7 +13,9 @@
 #include "modules/rangeproof/pedersen_impl.h"
 
 #include "modules/bulletproof/generators.h"
+#include "modules/bulletproof/parser_impl.h"
 #include "modules/bulletproof/inner_product_impl.h"
+#include "modules/bulletproof/circuit_impl.h"
 #include "modules/bulletproof/rangeproof_impl.h"
 #include "modules/bulletproof/util.h"
 

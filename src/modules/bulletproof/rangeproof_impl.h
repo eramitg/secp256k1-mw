@@ -207,7 +207,7 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
     }
     secp256k1_scalar_set_b32(&a, &proof[96], &overflow);
     if (overflow || secp256k1_scalar_is_zero(&a)) {
-        return 0;
+	    return 0;
     }
     secp256k1_scalar_set_b32(&b, &proof[128], &overflow);
     if (overflow || secp256k1_scalar_is_zero(&b)) {
@@ -224,23 +224,6 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
     secp256k1_scalar_mul(&taux, &taux, &ecmult_data.randomizer61);
     secp256k1_scalar_add(&mu, &mu, &taux);
     return secp256k1_bulletproof_inner_product_verify_impl(ecmult_ctx, scratch, geng, genh, &ecmult_data.t, &age, &mu, secp256k1_bulletproof_vfy_ecmult_callback, (void *) &ecmult_data, 5, &a, &b, lpt, rpt, depth, commit);
-}
-
-SECP256K1_INLINE static void secp256k1_bulletproof_rangeproof_genrand_pair(secp256k1_rfc6979_hmac_sha256 *rng, secp256k1_scalar *out1, secp256k1_scalar *out2) {
-    unsigned char tmp[32];
-    int overflow;
-
-    secp256k1_rfc6979_hmac_sha256_generate(rng, tmp, 32);
-    do {
-        secp256k1_rfc6979_hmac_sha256_generate(rng, tmp, 32);
-        secp256k1_scalar_set_b32(out1, tmp, &overflow);
-    } while (overflow || secp256k1_scalar_is_zero(out1));
-
-    secp256k1_rfc6979_hmac_sha256_generate(rng, tmp, 32);
-    do {
-        secp256k1_rfc6979_hmac_sha256_generate(rng, tmp, 32);
-        secp256k1_scalar_set_b32(out2, tmp, &overflow);
-    } while (overflow || secp256k1_scalar_is_zero(out2));
 }
 
 typedef struct {
@@ -270,7 +253,7 @@ static void secp256k1_lr_generate(secp256k1_bulletproof_lr_generator *generator,
     secp256k1_scalar sl, sr;
     secp256k1_scalar negz;
 
-    secp256k1_bulletproof_rangeproof_genrand_pair(&generator->rng, &sl, &sr);
+    secp256k1_bulletproof_genrand_pair(&generator->rng, &sl, &sr);
     secp256k1_scalar_mul(&sl, &sl, x);
     secp256k1_scalar_mul(&sr, &sr, x);
 
@@ -379,8 +362,8 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     memcpy(rngseed+32, commit, 32);
     secp256k1_rfc6979_hmac_sha256_initialize(&rng, rngseed, 64);
     memset(rngseed, 0, 32);
-    secp256k1_bulletproof_rangeproof_genrand_pair(&rng, &alpha, &rho);
-    secp256k1_bulletproof_rangeproof_genrand_pair(&rng, &tau1, &tau2);
+    secp256k1_bulletproof_genrand_pair(&rng, &alpha, &rho);
+    secp256k1_bulletproof_genrand_pair(&rng, &tau1, &tau2);
 
     /* Compute A and S */
     lr_gen.rng = rng;
@@ -393,7 +376,7 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
         secp256k1_ge sterm;
         secp256k1_gej stermj;
 
-        secp256k1_bulletproof_rangeproof_genrand_pair(&lr_gen.rng, &sl, &sr);
+        secp256k1_bulletproof_genrand_pair(&lr_gen.rng, &sl, &sr);
 
         secp256k1_ge_neg(&aterm, &aterm);
         secp256k1_fe_cmov(&aterm.x, &geng[i].x, al);

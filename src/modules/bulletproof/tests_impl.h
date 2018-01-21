@@ -224,6 +224,66 @@ void test_bulletproof_rangeproof(size_t nbits, size_t expected_size, const secp2
     secp256k1_scratch_destroy(scratch);
 }
 
+void test_bulletproof_circuit(const secp256k1_ge *geng, const secp256k1_ge *genh) {
+    unsigned char proof[2000];
+    const unsigned char nonce[32] = "ive got a bit won't tell u which";
+    size_t plen = sizeof(proof);
+    secp256k1_scalar one;
+    secp256k1_scalar al[2];
+    secp256k1_scalar ar[2];
+    secp256k1_scalar ao[2];
+    secp256k1_scratch *scratch = secp256k1_scratch_space_create(ctx, 1000000, 10000000);
+
+    const char inv_17_19_circ[] = "2,0,4; L0 = 17; 2*L1 - L0 = 21; O0 = 1; O1 = 1;";
+    secp256k1_bulletproof_circuit *simple = secp256k1_parse_circuit(ctx, inv_17_19_circ);
+
+secp256k1_scalar challenge;
+secp256k1_scalar answer;
+
+    CHECK (simple != NULL);
+secp256k1_scalar_set_int(&challenge, 17);
+secp256k1_scalar_inverse(&answer, &challenge);
+
+    secp256k1_scalar_set_int(&one, 1);
+
+    /* Try to prove with input 0, 1, 0 */
+    al[0] = al[1] = challenge;
+    ar[0] = ar[1] = answer;
+    ao[0] = ao[1] = one;
+
+secp256k1_scalar_set_int(&challenge, 19);
+secp256k1_scalar_inverse(&answer, &challenge);
+    al[1] = challenge;
+    ar[1] = answer;
+
+    CHECK(secp256k1_bulletproof_relation66_prove_impl(
+        &ctx->ecmult_ctx,
+        scratch,
+        proof, &plen,
+        al, ar, ao, 2,
+        NULL, NULL, 0,
+        &secp256k1_ge_const_g2,
+        simple,
+        geng, genh,
+        nonce,
+        NULL, 0
+    ));
+
+    CHECK(secp256k1_bulletproof_relation66_verify_impl(
+        &ctx->ecmult_ctx,
+        scratch,
+        proof, plen,
+        NULL, 0,
+        &secp256k1_ge_const_g2,
+        simple,
+        geng, genh,
+        NULL, 0
+    ));
+
+    secp256k1_circuit_destroy(simple);
+    secp256k1_scratch_destroy(scratch);
+}
+
 void run_bulletproof_tests(void) {
     size_t i;
 
@@ -261,6 +321,8 @@ void run_bulletproof_tests(void) {
     test_bulletproof_rangeproof(16, 546, geng, genh);
     test_bulletproof_rangeproof(32, 610, geng, genh);
     test_bulletproof_rangeproof(64, 674, geng, genh);
+
+    test_bulletproof_circuit(geng, genh);
 
     free(geng);
     free(genh);

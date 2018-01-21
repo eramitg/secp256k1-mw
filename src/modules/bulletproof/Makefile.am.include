@@ -1,5 +1,6 @@
 include_HEADERS += include/secp256k1_bulletproof.h
 noinst_HEADERS += src/modules/bulletproof/generators.h
+noinst_HEADERS += src/modules/bulletproof/circuit_impl.h
 noinst_HEADERS += src/modules/bulletproof/inner_product_impl.h
 noinst_HEADERS += src/modules/bulletproof/rangeproof_impl.h
 noinst_HEADERS += src/modules/bulletproof/main_impl.h

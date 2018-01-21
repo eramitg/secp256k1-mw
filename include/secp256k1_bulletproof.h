@@ -15,6 +15,8 @@ extern "C" {
 /* Size of a hypothetical 31-depth rangeproof, in bytes */
 #define SECP256K1_BULLETPROOF_MAX_PROOF (160 + 66*32 + 7)
 
+typedef struct secp256k1_bulletproof_circuit secp256k1_bulletproof_circuit;
+
 SECP256K1_API int secp256k1_bulletproof_rangeproof_verify(
     const secp256k1_context* ctx,
     secp256k1_scratch_space* scratch,
