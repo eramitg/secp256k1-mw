@@ -428,7 +428,7 @@ static int secp256k1_bulletproof_relation66_prove_impl(const secp256k1_ecmult_co
     abgh_data.geng = geng;
     abgh_data.genh = genh;
     secp256k1_bulletproof_circuit_lr_generator_init(&abgh_data.lr_gen, &rng, &y, &z, al, ar, ao, circ);
-    secp256k1_bulletproof_inner_product_prove_impl(ecmult_ctx, scratch, &a, &b, &out_pt[8], &out_pt[8 + depth], depth, secp256k1_bulletproof_circuit_abgh_callback, (void *) &abgh_data, commit);
+    secp256k1_bulletproof_inner_product_prove_impl(ecmult_ctx, scratch, &a, &b, &out_pt[8], &out_pt[8 + depth], 1 << depth, secp256k1_bulletproof_circuit_abgh_callback, (void *) &abgh_data, commit);
     secp256k1_bulletproof_circuit_lr_generator_finalize(&abgh_data.lr_gen);
 
     /* Encode everything */
@@ -452,7 +452,6 @@ typedef struct  {
     const secp256k1_bulletproof_circuit *circ;
     /* state tracking */
     size_t count;
-    int parity;
     /* eq 83 */
     secp256k1_ge age[3];
     /* eq 82 */
@@ -464,51 +463,40 @@ typedef struct  {
     size_t n_commits;
 } secp256k1_bulletproof_circuit_vfy_ecmult_context;
 
-static int secp256k1_bulletproof_circuit_vfy_ecmult_callback(secp256k1_scalar *sc, secp256k1_ge *pt, size_t idx, void *data) {
+static int secp256k1_bulletproof_circuit_vfy_callback(secp256k1_scalar *sc, secp256k1_ge *pt, secp256k1_scalar *randomizer, size_t idx, void *data) {
     secp256k1_bulletproof_circuit_vfy_ecmult_context *ctx = (secp256k1_bulletproof_circuit_vfy_ecmult_context *) data;
 
-    /* return an offset for a G or H exponent */
-    if (idx < ctx->circ->n_gates) {
-        if (ctx->parity == 0) { /* G */
-            /* mul_by tells the caller how to get H'; however note that the scalar we
-             * return in `sc` will be multiplied by H, not H'. Update it before doing
-             * this round. */
-            secp256k1_scalar_mul(&ctx->mul_by, &ctx->mul_by, &ctx->yinv);
+    if (idx < ctx->circ->n_gates) { /* Gi */
+        /* mul_by tells the caller how to get H'; however note that the scalar we
+         * return in `sc` will be multiplied by H, not H'. Update it before doing
+         * this round. */
+        secp256k1_scalar_mul(&ctx->mul_by, &ctx->mul_by, &ctx->yinv);
 
-            secp256k1_scalar_mul(sc, &ctx->circ->wr[idx].cached_sum, &ctx->x);
-            secp256k1_scalar_mul(sc, sc, &ctx->mul_by); /* mul_by is y^-n */
-        } else { /* H */
-            secp256k1_scalar dot;
+        secp256k1_scalar_mul(sc, &ctx->circ->wr[idx].cached_sum, &ctx->x);
+        secp256k1_scalar_mul(sc, sc, &ctx->mul_by); /* mul_by is y^-n */
+        secp256k1_scalar_mul(sc, sc, randomizer);
+    } else if (idx < 2 * ctx->circ->n_gates) { /* Hi */
+        secp256k1_scalar dot;
+        idx -= ctx->circ->n_gates;
+        /* TODO do this smarter */
+        secp256k1_scalar_mul(&ctx->mul_by, &ctx->mul_by, &ctx->yinv);
+if(idx == 0) {
+secp256k1_scalar_set_int(&ctx->mul_by, 1);
+}
+        secp256k1_scalar_mul(sc, &ctx->circ->wl[idx].cached_sum, &ctx->x);
+        secp256k1_scalar_add(sc, sc, &ctx->circ->wo[idx].cached_sum);
+        secp256k1_scalar_mul(sc, sc, &ctx->mul_by);
 
-            secp256k1_scalar_mul(sc, &ctx->circ->wl[idx].cached_sum, &ctx->x);
-            secp256k1_scalar_add(sc, sc, &ctx->circ->wo[idx].cached_sum);
-            secp256k1_scalar_mul(sc, sc, &ctx->mul_by);
+        secp256k1_scalar_set_int(&dot, 1);
+        secp256k1_scalar_negate(&dot, &dot);
+        secp256k1_scalar_add(sc, sc, &dot);
 
-            secp256k1_scalar_set_int(&dot, 1);
-            secp256k1_scalar_negate(&dot, &dot);
-            secp256k1_scalar_add(sc, sc, &dot);
-        } ctx->parity = !ctx->parity;
+        secp256k1_scalar_mul(sc, sc, randomizer);
     /* return a (scalar, point) pair to add to the multiexp */
     } else {
         switch(ctx->count) {
-        /* A_I^x (83) */
-        case 0:
-            *sc = ctx->x;
-            *pt = ctx->age[0];
-            break;
-        /* A_O^(x^2) (83) */
-        case 1:
-            secp256k1_scalar_sqr(sc, &ctx->x);
-            *pt = ctx->age[1];
-            break;
-        /* S^(x^3) (83) */
-        case 2:
-            secp256k1_scalar_sqr(sc, &ctx->x); /* TODO cache previous squaring */
-            secp256k1_scalar_mul(sc, sc, &ctx->x);
-            *pt = ctx->age[2];
-            break;
         /* g^(x^2(k + <z^Q, c>) - t) (82) */
-        case 3: {
+        case 0: {
             size_t i;
             secp256k1_scalar yn;
             secp256k1_scalar tmp;
@@ -533,6 +521,22 @@ static int secp256k1_bulletproof_circuit_vfy_ecmult_callback(secp256k1_scalar *s
             *pt = *ctx->genp;
             break;
         }
+        /* A_I^x (83) */
+        case 1:
+            *sc = ctx->x;
+            *pt = ctx->age[0];
+            break;
+        /* A_O^(x^2) (83) */
+        case 2:
+            secp256k1_scalar_sqr(sc, &ctx->x);
+            *pt = ctx->age[1];
+            break;
+        /* S^(x^3) (83) */
+        case 3:
+            secp256k1_scalar_sqr(sc, &ctx->x); /* TODO cache previous squaring */
+            secp256k1_scalar_mul(sc, sc, &ctx->x);
+            *pt = ctx->age[2];
+            break;
         /* T_1^x (82) */
         case 4:
             secp256k1_scalar_mul(sc, &ctx->x, &ctx->randomizer82);
@@ -551,6 +555,7 @@ static int secp256k1_bulletproof_circuit_vfy_ecmult_callback(secp256k1_scalar *s
                 VERIFY_CHECK(!"bulletproof: too many points added by circuit_verify_impl to inner_product_verify_impl");
             }
         }
+        secp256k1_scalar_mul(sc, sc, randomizer);
         ctx->count++;
     }
     return 1;
@@ -560,17 +565,12 @@ static int secp256k1_bulletproof_relation66_verify_impl(const secp256k1_ecmult_c
     secp256k1_sha256 sha256;
     const size_t depth = CTZ(circ->n_gates);
     secp256k1_bulletproof_circuit_vfy_ecmult_context ecmult_data;
+    secp256k1_bulletproof_innerproduct_context innp_ctx;
     unsigned char randomizer82[32] = {0};  /* randomizer for eq (82) so we can add it to eq (83) to save a separate multiexp */
     unsigned char commit[32] = {0};
     secp256k1_scalar taux, mu, a, b;
     secp256k1_scalar y;
-    secp256k1_ge lpt[SECP256K1_BULLETPROOF_MAX_DEPTH];  /* TODO we could save some stack by passing the raw proof data into the inner-product callback */
-    secp256k1_ge rpt[SECP256K1_BULLETPROOF_MAX_DEPTH];
-    secp256k1_ge inf;
     int overflow;
-    size_t i;
-
-    secp256k1_ge_set_infinity(&inf);
 
     /* sanity-check input */
     if (plen != (13 + 2*depth) * 32 + (8 + 2*depth + 7) / 8) {
@@ -599,10 +599,6 @@ static int secp256k1_bulletproof_relation66_verify_impl(const secp256k1_ecmult_c
     secp256k1_bulletproof_deserialize_point(&ecmult_data.tge[2], &proof[160], 5, 8 + 2*depth);
     secp256k1_bulletproof_deserialize_point(&ecmult_data.tge[3], &proof[160], 6, 8 + 2*depth);
     secp256k1_bulletproof_deserialize_point(&ecmult_data.tge[4], &proof[160], 7, 8 + 2*depth);
-    for (i = 0; i < depth; i++) {
-        secp256k1_bulletproof_deserialize_point(&lpt[i], &proof[160], 8 + i, 8 + 2*depth);
-        secp256k1_bulletproof_deserialize_point(&rpt[i], &proof[160], 8 + i + depth, 8 + 2*depth);
-    }
 
     /* Compute y, z, x */
     secp256k1_bulletproof_update_commit_n(commit, ecmult_data.age, 3);
@@ -663,9 +659,7 @@ static int secp256k1_bulletproof_relation66_verify_impl(const secp256k1_ecmult_c
 
     /* compute exponent offsets */
     ecmult_data.circ = circ;
-    ecmult_data.parity = 0;
     ecmult_data.count = 0;
-    secp256k1_scalar_set_int(&ecmult_data.mul_by, 1);
     ecmult_data.mul_by = y;
 
     ecmult_data.genp = genp;
@@ -675,7 +669,17 @@ static int secp256k1_bulletproof_relation66_verify_impl(const secp256k1_ecmult_c
     secp256k1_scalar_mul(&taux, &taux, &ecmult_data.randomizer82);
     secp256k1_scalar_add(&mu, &mu, &taux);
 
-    return secp256k1_bulletproof_inner_product_verify_impl(ecmult_ctx, scratch, geng, genh, &ecmult_data.t, &inf, &mu, secp256k1_bulletproof_circuit_vfy_ecmult_callback, (void *) &ecmult_data, 9 + nc, &a, &b, lpt, rpt, depth, commit);
+    innp_ctx.serialized_points = &proof[160];
+    innp_ctx.n_extra_ser_points = 8;
+    innp_ctx.a = a;
+    innp_ctx.b = b;
+    innp_ctx.dot = ecmult_data.t;
+    innp_ctx.p_offs = mu;
+    memcpy(innp_ctx.commit, commit, 32);
+    innp_ctx.rangeproof_cb = secp256k1_bulletproof_circuit_vfy_callback;
+    innp_ctx.rangeproof_cb_data = (void *) &ecmult_data;
+    innp_ctx.n_extra_rangeproof_points = 9 + nc;
+    return secp256k1_bulletproof_inner_product_verify_impl(ecmult_ctx, scratch, geng, genh, circ->n_gates, &innp_ctx, 1);
 }
 
 #endif

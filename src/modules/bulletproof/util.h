@@ -7,6 +7,29 @@
 #ifndef SECP256K1_MODULE_BULLETPROOF_UTIL
 #define SECP256K1_MODULE_BULLETPROOF_UTIL
 
+SECP256K1_INLINE static size_t secp256k1_ceil_lg(size_t n) {
+    VERIFY_CHECK(n > 0);
+    switch (n) {
+    case 1: return 0;
+    case 2: return 1;
+    case 3: return 2;
+    case 4: return 2;
+    case 5: return 3;
+    case 6: return 3;
+    case 7: return 3;
+    case 8: return 3;
+    default: {
+        size_t i = 0;
+        n--;
+        while (n > 0) {
+            n /= 2;
+            i++;
+        }
+        return i;
+    }
+    }
+}
+
 SECP256K1_INLINE static void secp256k1_bulletproof_genrand_pair(secp256k1_rfc6979_hmac_sha256 *rng, secp256k1_scalar *out1, secp256k1_scalar *out2) {
     unsigned char tmp[32];
     int overflow;
@@ -56,7 +79,7 @@ static void secp256k1_bulletproof_update_commit(unsigned char *commit, const sec
     secp256k1_fe pointx;
     secp256k1_sha256 sha256;
     unsigned char lrparity;
-    lrparity = (secp256k1_fe_is_quad_var(&lpt->y) >> 1) + secp256k1_fe_is_quad_var(&rpt->y);
+    lrparity = (!secp256k1_fe_is_quad_var(&lpt->y) << 1) + !secp256k1_fe_is_quad_var(&rpt->y);
     secp256k1_sha256_initialize(&sha256);
     secp256k1_sha256_write(&sha256, commit, 32);
     secp256k1_sha256_write(&sha256, &lrparity, 1);

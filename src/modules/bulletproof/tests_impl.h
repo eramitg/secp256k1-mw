@@ -45,25 +45,28 @@ typedef struct {
     secp256k1_scalar ext_sc;
     secp256k1_scalar skew_sc;
     secp256k1_ge ext_pt;
+    secp256k1_ge p;
     size_t n;
     int parity;
 } test_bulletproof_offset_context;
 
-static int test_bulletproof_offset_callback(secp256k1_scalar *sc, secp256k1_ge *pt, size_t idx, void *data) {
+static int test_bulletproof_offset_vfy_callback(secp256k1_scalar *sc, secp256k1_ge *pt, secp256k1_scalar *randomizer, size_t idx, void *data) {
     test_bulletproof_offset_context *ecctx = (test_bulletproof_offset_context *) data;
     secp256k1_scalar_set_int(&ecctx->offs, 1);
-    if (idx < ecctx->n) {
+    if (idx < 2 * ecctx->n) {
         secp256k1_scalar idxsc;
         secp256k1_scalar_set_int(&idxsc, idx);
-        *sc = ecctx->skew_sc;
-        secp256k1_scalar_mul(sc, sc, &idxsc);
-        if (ecctx->parity) {
-            secp256k1_scalar_add(sc, sc, sc);
-        }
+        secp256k1_scalar_mul(sc, &ecctx->skew_sc, &idxsc);
     } else {
-        *sc = ecctx->ext_sc;
-        *pt = ecctx->ext_pt;
+        if (ecctx->parity) {
+            *sc = ecctx->ext_sc;
+            *pt = ecctx->ext_pt;
+        } else {
+            secp256k1_scalar_set_int(sc, 1);
+            *pt = ecctx->p;
+        }
     }
+    secp256k1_scalar_mul(sc, sc, randomizer);
     ecctx->parity = !ecctx->parity;
     return 1;
 }
@@ -94,18 +97,16 @@ static int secp256k1_bulletproof_ip_test_abgh_callback(secp256k1_scalar *sc, sec
 void test_bulletproof_inner_product(size_t depth, const secp256k1_ge *geng, const secp256k1_ge *genh) {
     const secp256k1_scalar zero = SECP256K1_SCALAR_CONST(0,0,0,0,0,0,0,0);
     secp256k1_gej pj;
-    secp256k1_ge p;
     secp256k1_gej tmpj, tmpj2;
-    secp256k1_scalar a, b, p_offs;
-    secp256k1_ge lpt[MAX_WIDTH];
-    secp256k1_ge rpt[MAX_WIDTH];
+    secp256k1_ge out_pt[2 * MAX_WIDTH];
     secp256k1_scalar a_arr[MAX_WIDTH];
     secp256k1_scalar b_arr[MAX_WIDTH];
-    secp256k1_scalar c;
     unsigned char commit[32] = "hash of P, c, etc. all that jazz";
+    unsigned char serialized_points[32 * MAX_WIDTH + (MAX_WIDTH + 7)/8];
     size_t j;
     test_bulletproof_offset_context offs_ctx;
     secp256k1_bulletproof_ip_test_abgh_data abgh_data;
+    secp256k1_bulletproof_innerproduct_context innp_ctx;
 
     secp256k1_scratch *scratch = secp256k1_scratch_space_create(ctx, 1000000, 10000000);
 
@@ -116,20 +117,30 @@ void test_bulletproof_inner_product(size_t depth, const secp256k1_ge *geng, cons
         random_scalar_order(&a_arr[j]);
         random_scalar_order(&b_arr[j]);
     }
-    secp256k1_scalar_dot_product(&c, a_arr, b_arr, 1 << depth);
+    secp256k1_scalar_dot_product(&innp_ctx.dot, a_arr, b_arr, 1 << depth);
 
     abgh_data.geng = geng;
     abgh_data.genh = genh;
     abgh_data.a_arr = a_arr;
     abgh_data.b_arr = b_arr;
 
-    random_scalar_order(&p_offs);
+    random_scalar_order(&innp_ctx.p_offs);
     random_group_element_test(&offs_ctx.ext_pt);
     random_scalar_order(&offs_ctx.ext_sc);
     secp256k1_scalar_clear(&offs_ctx.skew_sc);
     offs_ctx.n = 1 << depth;
 
-    CHECK(secp256k1_bulletproof_inner_product_prove_impl(&ctx->ecmult_ctx, scratch, &a, &b, lpt, rpt, depth, secp256k1_bulletproof_ip_test_abgh_callback, (void *) &abgh_data, commit) == 1);
+    CHECK(secp256k1_bulletproof_inner_product_prove_impl(&ctx->ecmult_ctx, scratch, &innp_ctx.a, &innp_ctx.b, &out_pt[0], &out_pt[depth], 1 << depth, secp256k1_bulletproof_ip_test_abgh_callback, (void *) &abgh_data, commit) == 1);
+
+    innp_ctx.serialized_points = serialized_points;
+    secp256k1_bulletproof_serialize_points(serialized_points, out_pt, 2 * depth);
+    innp_ctx.n_extra_ser_points = 0;
+    memcpy(innp_ctx.commit, commit, 32);
+    innp_ctx.rangeproof_cb = NULL;
+    innp_ctx.rangeproof_cb_data = NULL;
+    innp_ctx.n_extra_rangeproof_points = 1;
+    innp_ctx.rangeproof_cb = test_bulletproof_offset_vfy_callback;
+    innp_ctx.rangeproof_cb_data = (void *) &offs_ctx;
 
     {
         test_bulletproof_ecmult_context ecmult_data;
@@ -142,51 +153,69 @@ void test_bulletproof_inner_product(size_t depth, const secp256k1_ge *geng, cons
     }
 
     /* skew P by a random amount and instruct the verifier to offset it */
-    secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &tmpj, &p_offs);
+    secp256k1_ecmult_gen(&ctx->ecmult_gen_ctx, &tmpj, &innp_ctx.p_offs);
     secp256k1_gej_add_var(&pj, &pj, &tmpj, NULL);
-    secp256k1_ge_set_gej(&p, &pj);
+    secp256k1_ge_set_gej(&offs_ctx.p, &pj);
 
     /* wrong p_offs should fail */
-    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, &c, &p, &p_offs, NULL, NULL, 0, &a, &b, lpt, rpt, depth, commit) == 0);
+    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, 1 << depth, &innp_ctx, 1) == 0);
 
-    secp256k1_scalar_negate(&p_offs, &p_offs);
+    secp256k1_scalar_negate(&innp_ctx.p_offs, &innp_ctx.p_offs);
 
-    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, &c, &p, &p_offs, NULL, NULL, 0, &a, &b, lpt, rpt, depth, commit) == 1);
+    offs_ctx.parity = 0;
+    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, 1 << depth, &innp_ctx, 1) == 1);
     /* check that verification did not trash anything */
-    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, &c, &p, &p_offs, NULL, NULL, 0, &a, &b, lpt, rpt, depth, commit) == 1);
+    offs_ctx.parity = 0;
+    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, 1 << depth, &innp_ctx, 1) == 1);
     /* check that adding a no-op rangeproof skew function doesn't break anything */
     offs_ctx.parity = 0;
-    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, &c, &p, &p_offs, test_bulletproof_offset_callback, (void*)&offs_ctx, 0, &a, &b, lpt, rpt, depth, commit) == 1);
+    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, 1 << depth, &innp_ctx, 1) == 1);
 
     /* Offset P by some random point and then try to undo this in the verification */
     secp256k1_gej_set_ge(&tmpj2, &offs_ctx.ext_pt);
     secp256k1_ecmult(&ctx->ecmult_ctx, &tmpj, &tmpj2, &offs_ctx.ext_sc, &zero);
     secp256k1_gej_neg(&tmpj, &tmpj);
-    secp256k1_gej_add_ge_var(&tmpj, &tmpj, &p, NULL);
-    secp256k1_ge_set_gej(&p, &tmpj);
+    secp256k1_gej_add_ge_var(&tmpj, &tmpj, &offs_ctx.p, NULL);
+    secp256k1_ge_set_gej(&offs_ctx.p, &tmpj);
     offs_ctx.parity = 0;
-    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, &c, &p, &p_offs, test_bulletproof_offset_callback, (void*)&offs_ctx, 1, &a, &b, lpt, rpt, depth, commit) == 1);
+    innp_ctx.n_extra_rangeproof_points = 2;
+    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, 1 << depth, &innp_ctx, 1) == 1);
 
     /* Offset each basis by some random point and try to undo this in the verification */
     secp256k1_gej_set_infinity(&tmpj2);
     for (j = 0; j < 1u << depth; j++) {
         size_t k;
-        /* Offset G-basis k by k times the random point, H-basis k by 2k times, to ensure
-         * that each index has a different skew */
+        /* Offset by k-times the kth G basis and (k+n)-times the kth H basis */
         for (k = 0; k < j; k++) {
             secp256k1_gej_add_ge_var(&tmpj2, &tmpj2, &geng[j], NULL);
             secp256k1_gej_add_ge_var(&tmpj2, &tmpj2, &genh[j], NULL);
+        }
+        for (k = 0; k < 1u << depth; k++) {
             secp256k1_gej_add_ge_var(&tmpj2, &tmpj2, &genh[j], NULL);
         }
     }
     random_scalar_order(&offs_ctx.skew_sc);
     secp256k1_ecmult(&ctx->ecmult_ctx, &tmpj, &tmpj2, &offs_ctx.skew_sc, &zero);
-    secp256k1_gej_add_ge_var(&tmpj, &tmpj, &p, NULL);
-    secp256k1_ge_set_gej(&p, &tmpj);
+    secp256k1_gej_add_ge_var(&tmpj, &tmpj, &offs_ctx.p, NULL);
+    secp256k1_ge_set_gej(&offs_ctx.p, &tmpj);
     secp256k1_scalar_negate(&offs_ctx.skew_sc, &offs_ctx.skew_sc);
 
     offs_ctx.parity = 0;
-    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, &c, &p, &p_offs, test_bulletproof_offset_callback, (void*)&offs_ctx, 1, &a, &b, lpt, rpt, depth, commit) == 1);
+    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, 1 << depth, &innp_ctx, 1) == 1);
+
+    /* Try to validate the same proof twice */
+{
+    test_bulletproof_offset_context offs_ctxs[2];
+    secp256k1_bulletproof_innerproduct_context innp_ctxs[2];
+    offs_ctx.parity = 1;  /* set parity to 1 so the common point will be returned first, as required by the multi-proof verifier */
+    memcpy(&innp_ctxs[0], &innp_ctx, sizeof(innp_ctx));
+    memcpy(&innp_ctxs[1], &innp_ctx, sizeof(innp_ctx));
+    memcpy(&offs_ctxs[0], &offs_ctx, sizeof(offs_ctx));
+    memcpy(&offs_ctxs[1], &offs_ctx, sizeof(offs_ctx));
+    innp_ctxs[0].rangeproof_cb_data = &offs_ctxs[0];
+    innp_ctxs[1].rangeproof_cb_data = &offs_ctxs[1];
+    CHECK(secp256k1_bulletproof_inner_product_verify_impl(&ctx->ecmult_ctx, scratch, geng, genh, 1 << depth, innp_ctxs, 2) == 1);
+}
 
     secp256k1_scratch_destroy(scratch);
 }
@@ -194,13 +223,15 @@ void test_bulletproof_inner_product(size_t depth, const secp256k1_ge *geng, cons
 void test_bulletproof_rangeproof(size_t nbits, size_t expected_size, const secp256k1_ge *geng, const secp256k1_ge *genh) {
     secp256k1_scalar blind;
     unsigned char proof[1024];
-    size_t plen = sizeof(proof);
+    const unsigned char *proof_ptr[2];
+    size_t plen[2] = { sizeof(proof), sizeof(proof) };
     uint64_t v = 123456;
     secp256k1_gej commitj;
-    secp256k1_ge commitp;
+    secp256k1_ge commitp[2];
+    secp256k1_ge genp[2];
     secp256k1_scalar vs;
     secp256k1_gej altgen;
-    unsigned char commit[32] = {0};
+    unsigned char commit[32][2] = {{0}, {0}};
     unsigned char nonce[32] = "my kingdom for some randomness!!";
 
     secp256k1_scratch *scratch = secp256k1_scratch_space_create(ctx, 1000000, 10000000);
@@ -209,17 +240,23 @@ void test_bulletproof_rangeproof(size_t nbits, size_t expected_size, const secp2
         v = 0;
     }
 
+    proof_ptr[0] = proof_ptr[1] = proof;
+
     secp256k1_gej_set_ge(&altgen, &secp256k1_ge_const_g2);
     random_scalar_order(&blind);
     secp256k1_scalar_set_u64(&vs, v);
     secp256k1_ecmult(&ctx->ecmult_ctx, &commitj, &altgen, &vs, &blind);
-    secp256k1_ge_set_gej(&commitp, &commitj);
+    secp256k1_ge_set_gej(&commitp[0], &commitj);
+    secp256k1_ge_set_gej(&commitp[1], &commitj);
 
-    secp256k1_bulletproof_update_commit(commit, &commitp, &secp256k1_ge_const_g2);
+    genp[0] = genp[1] = secp256k1_ge_const_g2;
+    secp256k1_bulletproof_update_commit(commit[0], &commitp[0], &secp256k1_ge_const_g2);
+    secp256k1_bulletproof_update_commit(commit[1], &commitp[1], &secp256k1_ge_const_g2);
 
-    CHECK(secp256k1_bulletproof_rangeproof_prove_impl(&ctx->ecmult_gen_ctx, &ctx->ecmult_ctx, scratch, proof, &plen, nbits, v, &blind, &commitp, &secp256k1_ge_const_g2, geng, genh, nonce, NULL, 0) == 1);
-    CHECK(plen == expected_size);
-    CHECK(secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, proof, plen, nbits, &commitp, &secp256k1_ge_const_g2, geng, genh, NULL, 0) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_prove_impl(&ctx->ecmult_gen_ctx, &ctx->ecmult_ctx, scratch, proof, &plen[0], nbits, v, &blind, commitp, &secp256k1_ge_const_g2, geng, genh, nonce, NULL, 0) == 1);
+    CHECK(plen[0] == expected_size);
+    plen[1] = plen[0];
+    CHECK(secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, proof_ptr, plen, 2, nbits, commitp, genp, geng, genh, NULL, 0) == 1);
 
     secp256k1_scratch_destroy(scratch);
 }

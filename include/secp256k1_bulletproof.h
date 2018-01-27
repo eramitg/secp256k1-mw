@@ -29,6 +29,19 @@ SECP256K1_API int secp256k1_bulletproof_rangeproof_verify(
     size_t extra_commit_len
 ) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(5) SECP256K1_ARG_NONNULL(7);
 
+SECP256K1_API int secp256k1_bulletproof_rangeproof_verify_multi(
+    const secp256k1_context* ctx,
+    secp256k1_scratch_space* scratch,
+    const unsigned char* proof,
+    size_t plen,
+    const secp256k1_pedersen_commitment* commit,
+    size_t nbits,
+    const secp256k1_generator* gen,
+    const unsigned char* extra_commit,
+    size_t extra_commit_len
+) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(5) SECP256K1_ARG_NONNULL(7);
+
+
 SECP256K1_API int secp256k1_bulletproof_rangeproof_prove(
     const secp256k1_context* ctx,
     secp256k1_scratch_space* scratch,

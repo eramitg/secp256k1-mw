@@ -36,7 +36,7 @@ static void bench_bulletproof_setup(void* arg) {
 
     data->plen = sizeof(data->proof);
     CHECK(secp256k1_bulletproof_rangeproof_prove(data->ctx, data->scratch, data->proof, &data->plen, VALUE, blind, &data->altgen, WIDTH, nonce, NULL, 0) == 1);
-    CHECK(secp256k1_bulletproof_rangeproof_verify(data->ctx, data->scratch, data->proof, data->plen, &data->commit, WIDTH, &data->altgen, NULL, 0) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_verify_multi(data->ctx, data->scratch, data->proof, data->plen, &data->commit, WIDTH, &data->altgen, NULL, 0) == 1);
 }
 
 static void bench_bulletproof(void* arg) {
@@ -44,7 +44,7 @@ static void bench_bulletproof(void* arg) {
     bench_bulletproof_t *data = (bench_bulletproof_t*)arg;
 
     for (i = 0; i < 1000; i++) {
-        CHECK(secp256k1_bulletproof_rangeproof_verify(data->ctx, data->scratch, data->proof, data->plen, &data->commit, WIDTH, &data->altgen, NULL, 0) == 1);
+        CHECK(secp256k1_bulletproof_rangeproof_verify_multi(data->ctx, data->scratch, data->proof, data->plen, &data->commit, WIDTH, &data->altgen, NULL, 0) == 1);
     }
 }
 
