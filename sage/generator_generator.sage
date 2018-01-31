@@ -9,6 +9,8 @@ F = FiniteField (p)
 C = EllipticCurve ([F(0), F(7)])
 G = C.lift_x(0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798)
 
+N_PAIRS = 65536
+
 # Create generator
 def generator(curve, seed):
     hash = hashlib.sha256(seed).hexdigest()
@@ -46,16 +48,21 @@ sys.stdout.write(";\n\n")
 sys.stdout.write("/* 128 generators to be used for rangeproofs. Each is computed by hashing\n")
 sys.stdout.write(" * G alongside the smallest one-byte index that works.\n")
 sys.stdout.write(" */\n")
-sys.stdout.write("static const secp256k1_ge secp256k1_ge_const_gi[32] = {\n")
+sys.stdout.write("static const secp256k1_ge secp256k1_ge_const_gi[%d] = {\n" % N_PAIRS)
 idx = 0
 done = 0
-while done < 128:
+while done < N_PAIRS:
     idx += 1  ## it can be checked that 0 doesn't work, so harmless to skip it
     try:
-        gen = generator(C, ("%s%02x" % (ghex, idx)).decode('hex'))
+        if idx < 0x100:
+            gen = generator(C, ("%s%02x" % (ghex, idx)).decode('hex'))
+        elif idx < 0x10000:
+            gen = generator(C, ("%s%04x" % (ghex, idx)).decode('hex'))
+        elif idx < 0x1000000:
+            gen = generator(C, ("%s%06x" % (ghex, idx)).decode('hex'))
         sys.stdout.write("/* sha256(G || %d) */\n" % idx)
         print_generator(gen)
-        if done == 127:
+        if done == N_PAIRS - 1:
             sys.stdout.write("\n")
         else:
             sys.stdout.write(",\n")

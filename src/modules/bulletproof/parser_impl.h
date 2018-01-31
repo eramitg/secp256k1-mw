@@ -35,8 +35,6 @@ struct secp256k1_bulletproof_circuit {
     secp256k1_scalar *scratch;
 };
 
-void secp256k1_circuit_destroy(secp256k1_bulletproof_circuit *circ);
-
 void secp256k1_parse_scalar(secp256k1_scalar *r, const char *c, const char **end) {
     int neg = 0;
     int null = 1;
@@ -134,16 +132,17 @@ static secp256k1_bulletproof_circuit *secp256k1_parse_circuit(const secp256k1_co
                 w = ret->wv;
                 break;
             default:
-                secp256k1_circuit_destroy(ret);
+                secp256k1_circuit_destroy(ctx, ret);
                 return NULL;
             }
             c++;
             if (sscanf(c, "%d %n", &index, &chars_read) != 1) {
-                secp256k1_circuit_destroy(ret);
+                secp256k1_circuit_destroy(ctx, ret);
+        free (ret);
                 return NULL;
             }
             if ((w != ret->wv && index >= n_gates) || (w == ret->wv && index >= n_commits)) {
-                secp256k1_circuit_destroy(ret);
+                secp256k1_circuit_destroy(ctx, ret);
                 return NULL;
             }
             row = &w[index];
@@ -171,12 +170,12 @@ static secp256k1_bulletproof_circuit *secp256k1_parse_circuit(const secp256k1_co
             c++;
             secp256k1_parse_scalar(&ret->c[i], c, &c);
             if (*c != ';') {
-                secp256k1_circuit_destroy(ret);
+                secp256k1_circuit_destroy(ctx, ret);
                 return NULL;
             }
             c++;
         } else {
-            secp256k1_circuit_destroy(ret);
+            secp256k1_circuit_destroy(ctx, ret);
             return NULL;
         }
     }
@@ -230,7 +229,7 @@ static void secp256k1_circuit_compress(secp256k1_bulletproof_circuit *circ, cons
     }
 }
 
-void secp256k1_circuit_destroy(secp256k1_bulletproof_circuit *circ) {
+static void secp256k1_circuit_destroy_impl(secp256k1_bulletproof_circuit *circ) {
     if (circ != NULL) {
         free(circ->wl);
         free(circ->wr);

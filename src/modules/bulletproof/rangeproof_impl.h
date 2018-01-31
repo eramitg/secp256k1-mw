@@ -153,10 +153,10 @@ static int secp256k1_bulletproof_rangeproof_vfy_callback(secp256k1_scalar *sc, s
     return 1;
 }
 
-static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, const unsigned char **proof, size_t *plen, size_t n_proofs, size_t nbits, const secp256k1_ge *commitp, size_t n_commits, const secp256k1_ge *genp, const secp256k1_ge *geng, const secp256k1_ge *genh, const unsigned char *extra_commit, size_t extra_commit_len) {
+static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, const unsigned char **proof, size_t *plen, size_t n_proofs, size_t nbits, const secp256k1_ge **commitp, size_t n_commits, const secp256k1_ge *genp, const secp256k1_ge *geng, const secp256k1_ge *genh, const unsigned char *extra_commit, size_t extra_commit_len) {
     const size_t depth = secp256k1_ceil_lg(nbits * n_commits);
-    secp256k1_bulletproof_vfy_ecmult_context ecmult_data[10];
-    secp256k1_bulletproof_innerproduct_context innp_ctx[10];
+    secp256k1_bulletproof_vfy_ecmult_context ecmult_data[MAX_BATCH_QTY];
+    secp256k1_bulletproof_innerproduct_context innp_ctx[MAX_BATCH_QTY];
     size_t i;
 
     /* sanity-check input */
@@ -183,7 +183,7 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
 
         /* Commit to all input data: pedersen commit, asset generator, extra_commit */
         for (j = 0; j < n_commits; j++) {
-            secp256k1_bulletproof_update_commit(commit, &commitp[j], &genp[0]);
+            secp256k1_bulletproof_update_commit(commit, &commitp[i][j], genp);
         }
         if (extra_commit != NULL) {
             secp256k1_sha256_initialize(&sha256);
@@ -264,7 +264,7 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
         ecmult_data[i].n = nbits * n_commits;
         ecmult_data[i].count = 0;
         ecmult_data[i].asset = genp;
-        ecmult_data[i].commit = commitp;
+        ecmult_data[i].commit = commitp[i];
         ecmult_data[i].n_commits = n_commits;
         secp256k1_scalar_mul(&taux, &taux, &ecmult_data[i].randomizer61);
         secp256k1_scalar_add(&mu, &mu, &taux);

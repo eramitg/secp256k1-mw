@@ -428,7 +428,9 @@ static int secp256k1_bulletproof_relation66_prove_impl(const secp256k1_ecmult_co
     abgh_data.geng = geng;
     abgh_data.genh = genh;
     secp256k1_bulletproof_circuit_lr_generator_init(&abgh_data.lr_gen, &rng, &y, &z, al, ar, ao, circ);
-    secp256k1_bulletproof_inner_product_prove_impl(ecmult_ctx, scratch, &a, &b, &out_pt[8], &out_pt[8 + depth], 1 << depth, secp256k1_bulletproof_circuit_abgh_callback, (void *) &abgh_data, commit);
+    if (secp256k1_bulletproof_inner_product_prove_impl(ecmult_ctx, scratch, &a, &b, &out_pt[8], &out_pt[8 + depth], 1ull << depth, secp256k1_bulletproof_circuit_abgh_callback, (void *) &abgh_data, commit) == 0) {
+        return 0;
+    }
     secp256k1_bulletproof_circuit_lr_generator_finalize(&abgh_data.lr_gen);
 
     /* Encode everything */
@@ -561,125 +563,131 @@ secp256k1_scalar_set_int(&ctx->mul_by, 1);
     return 1;
 }
 
-static int secp256k1_bulletproof_relation66_verify_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, const unsigned char *proof, size_t plen, const secp256k1_ge *commitp, size_t nc, const secp256k1_ge *genp, secp256k1_bulletproof_circuit *circ, const secp256k1_ge *geng, const secp256k1_ge *genh, const unsigned char *extra_commit, size_t extra_commit_len) {
-    secp256k1_sha256 sha256;
-    const size_t depth = CTZ(circ->n_gates);
-    secp256k1_bulletproof_circuit_vfy_ecmult_context ecmult_data;
-    secp256k1_bulletproof_innerproduct_context innp_ctx;
-    unsigned char randomizer82[32] = {0};  /* randomizer for eq (82) so we can add it to eq (83) to save a separate multiexp */
-    unsigned char commit[32] = {0};
-    secp256k1_scalar taux, mu, a, b;
-    secp256k1_scalar y;
-    int overflow;
+static int secp256k1_bulletproof_relation66_verify_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, const unsigned char **proof, size_t *plen, size_t n_proofs, const secp256k1_ge *commitp, size_t nc, const secp256k1_ge *genp, secp256k1_bulletproof_circuit **circ, const secp256k1_ge *geng, const secp256k1_ge *genh, const unsigned char *extra_commit, size_t extra_commit_len) {
+    const size_t depth = CTZ(circ[0]->n_gates);
+    secp256k1_bulletproof_circuit_vfy_ecmult_context ecmult_data[MAX_BATCH_QTY];
+    secp256k1_bulletproof_innerproduct_context innp_ctx[MAX_BATCH_QTY];
+    size_t i;
 
     /* sanity-check input */
-    if (plen != (13 + 2*depth) * 32 + (8 + 2*depth + 7) / 8) {
-        return 0;
-    }
-    if (depth > SECP256K1_BULLETPROOF_MAX_DEPTH || plen > SECP256K1_BULLETPROOF_MAX_PROOF) {
-        return 0;
+    for (i = 0; i < n_proofs; i++) {
+        if (plen[i] != (13 + 2*depth) * 32 + (8 + 2*depth + 7) / 8) {
+            return 0;
+        }
+        if (depth > SECP256K1_BULLETPROOF_MAX_DEPTH || plen[i] > SECP256K1_BULLETPROOF_MAX_PROOF) {
+            return 0;
+        }
     }
 
-    /* Commit to all input data: pedersen commit, asset generator, extra_commit */
-    secp256k1_bulletproof_update_commit_n(commit, commitp, nc);
-    secp256k1_bulletproof_update_commit_n(commit, genp, 1);
-    if (extra_commit != NULL) {
+    for (i = 0; i < n_proofs; i++) {
+        secp256k1_sha256 sha256;
+        unsigned char randomizer82[32] = {0};  /* randomizer for eq (82) so we can add it to eq (83) to save a separate multiexp */
+        unsigned char commit[32] = {0};
+        secp256k1_scalar taux, mu, a, b;
+        secp256k1_scalar y;
+        int overflow;
+
+        /* Commit to all input data: pedersen commit, asset generator, extra_commit */
+        secp256k1_bulletproof_update_commit_n(commit, commitp, nc);
+        secp256k1_bulletproof_update_commit_n(commit, genp, 1);
+        if (extra_commit != NULL) {
+            secp256k1_sha256_initialize(&sha256);
+            secp256k1_sha256_write(&sha256, commit, 32);
+            secp256k1_sha256_write(&sha256, extra_commit, extra_commit_len);
+            secp256k1_sha256_finalize(&sha256, commit);
+        }
+
+        /* Deserialize everything */
+        secp256k1_bulletproof_deserialize_point(&ecmult_data[i].age[0], &proof[i][160], 0, 8 + 2*depth);
+        secp256k1_bulletproof_deserialize_point(&ecmult_data[i].age[1], &proof[i][160], 1, 8 + 2*depth);
+        secp256k1_bulletproof_deserialize_point(&ecmult_data[i].age[2], &proof[i][160], 2, 8 + 2*depth);
+        secp256k1_bulletproof_deserialize_point(&ecmult_data[i].tge[0], &proof[i][160], 3, 8 + 2*depth);
+        secp256k1_bulletproof_deserialize_point(&ecmult_data[i].tge[1], &proof[i][160], 4, 8 + 2*depth);
+        secp256k1_bulletproof_deserialize_point(&ecmult_data[i].tge[2], &proof[i][160], 5, 8 + 2*depth);
+        secp256k1_bulletproof_deserialize_point(&ecmult_data[i].tge[3], &proof[i][160], 6, 8 + 2*depth);
+        secp256k1_bulletproof_deserialize_point(&ecmult_data[i].tge[4], &proof[i][160], 7, 8 + 2*depth);
+
+        /* Compute y, z, x */
+        secp256k1_bulletproof_update_commit_n(commit, ecmult_data[i].age, 3);
+        secp256k1_scalar_set_b32(&y, commit, &overflow);
+        if (overflow || secp256k1_scalar_is_zero(&y)) {
+            return 0;
+        }
+        secp256k1_scalar_inverse_var(&ecmult_data[i].yinv, &y);  /* TODO batch this into another inverse */
+        secp256k1_bulletproof_update_commit_n(commit, NULL, 0);
+        secp256k1_scalar_set_b32(&ecmult_data[i].z, commit, &overflow);
+        if (overflow || secp256k1_scalar_is_zero(&ecmult_data[i].z)) {
+            return 0;
+        }
+
+        secp256k1_bulletproof_update_commit_n(commit, ecmult_data[i].tge, 5);
+        secp256k1_scalar_set_b32(&ecmult_data[i].x, commit, &overflow);
+        if (overflow || secp256k1_scalar_is_zero(&ecmult_data[i].x)) {
+            return 0;
+        }
+
+        secp256k1_circuit_compress(circ[i], &ecmult_data[i].z);
+
+        /* Extract scalars */
+        secp256k1_scalar_set_b32(&ecmult_data[i].t, &proof[i][0], &overflow);
+        if (overflow || secp256k1_scalar_is_zero(&ecmult_data[i].t)) {
+            return 0;
+        }
+        secp256k1_scalar_set_b32(&taux, &proof[i][32], &overflow);
+        if (overflow || secp256k1_scalar_is_zero(&taux)) {
+            return 0;
+        }
+        secp256k1_scalar_set_b32(&mu, &proof[i][64], &overflow);
+        if (overflow || secp256k1_scalar_is_zero(&mu)) {
+            return 0;
+        }
+        secp256k1_scalar_set_b32(&a, &proof[i][96], &overflow);
+        if (overflow || secp256k1_scalar_is_zero(&a)) {
+            return 0;
+        }
+        secp256k1_scalar_set_b32(&b, &proof[i][128], &overflow);
+        if (overflow || secp256k1_scalar_is_zero(&b)) {
+            return 0;
+        }
+
+        /* Mix these scalars into the hash so the input to the inner product proof is fixed */
         secp256k1_sha256_initialize(&sha256);
         secp256k1_sha256_write(&sha256, commit, 32);
-        secp256k1_sha256_write(&sha256, extra_commit, extra_commit_len);
+        secp256k1_sha256_write(&sha256, proof[i], 96);
         secp256k1_sha256_finalize(&sha256, commit);
+
+        secp256k1_sha256_initialize(&sha256);
+        secp256k1_sha256_write(&sha256, commit, 32);
+        secp256k1_sha256_finalize(&sha256, randomizer82);
+        secp256k1_scalar_set_b32(&ecmult_data[i].randomizer82, randomizer82, &overflow);
+        if (overflow || secp256k1_scalar_is_zero(&ecmult_data[i].randomizer82)) {
+            return 0;
+        }
+
+        /* compute exponent offsets */
+        ecmult_data[i].circ = circ[i];
+        ecmult_data[i].count = 0;
+        ecmult_data[i].mul_by = y;
+
+        ecmult_data[i].genp = genp;
+        ecmult_data[i].commits = commitp;
+        ecmult_data[i].n_commits = nc;
+
+        secp256k1_scalar_mul(&taux, &taux, &ecmult_data[i].randomizer82);
+        secp256k1_scalar_add(&mu, &mu, &taux);
+
+        innp_ctx[i].serialized_points = &proof[i][160];
+        innp_ctx[i].n_extra_ser_points = 8;
+        innp_ctx[i].a = a;
+        innp_ctx[i].b = b;
+        innp_ctx[i].dot = ecmult_data[i].t;
+        innp_ctx[i].p_offs = mu;
+        memcpy(innp_ctx[i].commit, commit, 32);
+        innp_ctx[i].rangeproof_cb = secp256k1_bulletproof_circuit_vfy_callback;
+        innp_ctx[i].rangeproof_cb_data = (void *) &ecmult_data[i];
+        innp_ctx[i].n_extra_rangeproof_points = 9 + nc;
     }
-
-    /* Deserialize everything */
-    secp256k1_bulletproof_deserialize_point(&ecmult_data.age[0], &proof[160], 0, 8 + 2*depth);
-    secp256k1_bulletproof_deserialize_point(&ecmult_data.age[1], &proof[160], 1, 8 + 2*depth);
-    secp256k1_bulletproof_deserialize_point(&ecmult_data.age[2], &proof[160], 2, 8 + 2*depth);
-    secp256k1_bulletproof_deserialize_point(&ecmult_data.tge[0], &proof[160], 3, 8 + 2*depth);
-    secp256k1_bulletproof_deserialize_point(&ecmult_data.tge[1], &proof[160], 4, 8 + 2*depth);
-    secp256k1_bulletproof_deserialize_point(&ecmult_data.tge[2], &proof[160], 5, 8 + 2*depth);
-    secp256k1_bulletproof_deserialize_point(&ecmult_data.tge[3], &proof[160], 6, 8 + 2*depth);
-    secp256k1_bulletproof_deserialize_point(&ecmult_data.tge[4], &proof[160], 7, 8 + 2*depth);
-
-    /* Compute y, z, x */
-    secp256k1_bulletproof_update_commit_n(commit, ecmult_data.age, 3);
-    secp256k1_scalar_set_b32(&y, commit, &overflow);
-    if (overflow || secp256k1_scalar_is_zero(&y)) {
-        return 0;
-    }
-    secp256k1_scalar_inverse_var(&ecmult_data.yinv, &y);  /* TODO batch this into another inverse */
-    secp256k1_bulletproof_update_commit_n(commit, NULL, 0);
-    secp256k1_scalar_set_b32(&ecmult_data.z, commit, &overflow);
-    if (overflow || secp256k1_scalar_is_zero(&ecmult_data.z)) {
-        return 0;
-    }
-
-    secp256k1_bulletproof_update_commit_n(commit, ecmult_data.tge, 5);
-    secp256k1_scalar_set_b32(&ecmult_data.x, commit, &overflow);
-    if (overflow || secp256k1_scalar_is_zero(&ecmult_data.x)) {
-        return 0;
-    }
-
-    secp256k1_circuit_compress(circ, &ecmult_data.z);
-
-    /* Extract scalars */
-    secp256k1_scalar_set_b32(&ecmult_data.t, &proof[0], &overflow);
-    if (overflow || secp256k1_scalar_is_zero(&ecmult_data.t)) {
-        return 0;
-    }
-    secp256k1_scalar_set_b32(&taux, &proof[32], &overflow);
-    if (overflow || secp256k1_scalar_is_zero(&taux)) {
-        return 0;
-    }
-    secp256k1_scalar_set_b32(&mu, &proof[64], &overflow);
-    if (overflow || secp256k1_scalar_is_zero(&mu)) {
-        return 0;
-    }
-    secp256k1_scalar_set_b32(&a, &proof[96], &overflow);
-    if (overflow || secp256k1_scalar_is_zero(&a)) {
-        return 0;
-    }
-    secp256k1_scalar_set_b32(&b, &proof[128], &overflow);
-    if (overflow || secp256k1_scalar_is_zero(&b)) {
-        return 0;
-    }
-
-    /* Mix these scalars into the hash so the input to the inner product proof is fixed */
-    secp256k1_sha256_initialize(&sha256);
-    secp256k1_sha256_write(&sha256, commit, 32);
-    secp256k1_sha256_write(&sha256, proof, 96);
-    secp256k1_sha256_finalize(&sha256, commit);
-
-    secp256k1_sha256_initialize(&sha256);
-    secp256k1_sha256_write(&sha256, commit, 32);
-    secp256k1_sha256_finalize(&sha256, randomizer82);
-    secp256k1_scalar_set_b32(&ecmult_data.randomizer82, randomizer82, &overflow);
-    if (overflow || secp256k1_scalar_is_zero(&ecmult_data.randomizer82)) {
-        return 0;
-    }
-
-    /* compute exponent offsets */
-    ecmult_data.circ = circ;
-    ecmult_data.count = 0;
-    ecmult_data.mul_by = y;
-
-    ecmult_data.genp = genp;
-    ecmult_data.commits = commitp;
-    ecmult_data.n_commits = nc;
-
-    secp256k1_scalar_mul(&taux, &taux, &ecmult_data.randomizer82);
-    secp256k1_scalar_add(&mu, &mu, &taux);
-
-    innp_ctx.serialized_points = &proof[160];
-    innp_ctx.n_extra_ser_points = 8;
-    innp_ctx.a = a;
-    innp_ctx.b = b;
-    innp_ctx.dot = ecmult_data.t;
-    innp_ctx.p_offs = mu;
-    memcpy(innp_ctx.commit, commit, 32);
-    innp_ctx.rangeproof_cb = secp256k1_bulletproof_circuit_vfy_callback;
-    innp_ctx.rangeproof_cb_data = (void *) &ecmult_data;
-    innp_ctx.n_extra_rangeproof_points = 9 + nc;
-    return secp256k1_bulletproof_inner_product_verify_impl(ecmult_ctx, scratch, geng, genh, circ->n_gates, &innp_ctx, 1);
+    return secp256k1_bulletproof_inner_product_verify_impl(ecmult_ctx, scratch, geng, genh, circ[0]->n_gates, innp_ctx, n_proofs);
 }
 
 #endif
