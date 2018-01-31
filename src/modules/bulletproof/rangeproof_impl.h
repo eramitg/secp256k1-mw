@@ -32,6 +32,7 @@ typedef struct {
     secp256k1_scalar t;
     const secp256k1_ge *asset;
     const secp256k1_ge *commit;
+    size_t n_commits;
     secp256k1_ge t1;
     secp256k1_ge t2;
 } secp256k1_bulletproof_vfy_ecmult_context;
@@ -42,12 +43,25 @@ static int secp256k1_bulletproof_rangeproof_vfy_callback(secp256k1_scalar *sc, s
     if (idx == 0) {
         secp256k1_scalar_mul(&ctx->g_exponent, &ctx->negz, randomizer);
         secp256k1_scalar_mul(&ctx->z_randomized, &ctx->z, randomizer);
-        secp256k1_scalar_mul(&ctx->zsq, &ctx->zsq, randomizer);
     }
 
     if (idx < ctx->n) {
         *sc = ctx->g_exponent;
     } else if (idx < 2 * ctx->n) {
+        const size_t nbits = ctx->n / ctx->n_commits;
+        const size_t commit_idx = (idx - ctx->n) / nbits;
+        const size_t bit_idx = (idx - ctx->n) % nbits;
+
+        if (bit_idx == 0) {
+            size_t i;
+            secp256k1_scalar_sqr(&ctx->zsq, &ctx->z);
+            for (i = 0; i < commit_idx; i++) {
+                secp256k1_scalar_mul(&ctx->zsq, &ctx->zsq, &ctx->z);
+            }
+            secp256k1_scalar_mul(&ctx->zsq, &ctx->zsq, &ctx->mul_by);
+            secp256k1_scalar_mul(&ctx->zsq, &ctx->zsq, &ctx->yinv);
+            secp256k1_scalar_mul(&ctx->zsq, &ctx->zsq, randomizer);
+        }
         secp256k1_scalar_add(sc, &ctx->zsq, &ctx->z_randomized);
 
         secp256k1_scalar_mul(&ctx->zsq, &ctx->zsq, &ctx->yinv);
@@ -55,49 +69,64 @@ static int secp256k1_bulletproof_rangeproof_vfy_callback(secp256k1_scalar *sc, s
         secp256k1_scalar_mul(&ctx->mul_by, &ctx->mul_by, &ctx->yinv);
     } else {
         switch(ctx->count) {
+        /* S^x in eq (62) */
+        case 0:
+            *sc = ctx->x;
+            *pt = ctx->s;
+            break;
+        /* A in eq (62) */
+        case 1:
+            *pt = ctx->a;
+            secp256k1_scalar_set_int(sc, 1);
+            break;
         /* G^[k(y, z) + sum_i y^i - t] from eq (61) */
-        case 0: {
+        case 2: {
             size_t i;
             secp256k1_scalar yn;
-            secp256k1_scalar twon;
+            secp256k1_scalar twosum;
             secp256k1_scalar tmp;
 
-            secp256k1_scalar_set_int(&twon, 1);
-            secp256k1_scalar_set_int(&yn, 1);
+            secp256k1_scalar_clear(&twosum);
+            secp256k1_scalar_clear(&yn);
             secp256k1_scalar_set_int(&tmp, 1);
 
             secp256k1_scalar_sqr(&ctx->zsq, &ctx->z);  /* need to re-set this */
             secp256k1_scalar_negate(sc, &ctx->zsq);  /* -z^2 */
             secp256k1_scalar_add(sc, sc, &ctx->z);   /* z - z^2 */
 
-            for (i = 0; i < ctx->n - 1; i++) {
-                secp256k1_scalar_mul(&yn, &yn, &ctx->y);
-                secp256k1_scalar_add(&twon, &twon, &twon);
+            for (i = 0; i < ctx->n_commits; i++) {
+                const size_t nbits = ctx->n / ctx->n_commits;
+                secp256k1_scalar negzn;
+                secp256k1_scalar twon;
+                size_t j;
 
-                secp256k1_scalar_add(&yn, &yn, &tmp);
-                secp256k1_scalar_add(&twon, &twon, &tmp);
-            }  /* yn = 1 + y + ... + y^(n-1); twon = 1 + 2 + ... + 2^(n-1) */
-            secp256k1_scalar_mul(&tmp, &ctx->zsq, &ctx->negz);
-            secp256k1_scalar_mul(&twon, &twon, &tmp);
+                secp256k1_scalar_clear(&twon);
+                for (j = 0; j < nbits; j++) {
+
+                    secp256k1_scalar_mul(&yn, &yn, &ctx->y);
+                    secp256k1_scalar_add(&twon, &twon, &twon);
+
+                    secp256k1_scalar_add(&yn, &yn, &tmp);
+                    secp256k1_scalar_add(&twon, &twon, &tmp);
+                }
+
+                secp256k1_scalar_mul(&negzn, &ctx->zsq, &ctx->negz);
+                for (j = 0; j < i; j++) {
+                    secp256k1_scalar_mul(&negzn, &negzn, &ctx->z);
+                }
+                secp256k1_scalar_mul(&twon, &twon, &negzn);
+                secp256k1_scalar_add(&twosum, &twosum, &twon);
+            }  /* yn = 1 + y + ... + y^(n-1); twosum = (z^3 + ... + z^{2 + n_commits})(1 + 2 + ... + 2^(n-1)) */
+
 
             secp256k1_scalar_mul(sc, sc, &yn);    /* (z - z^2)(1 + ... + y^(n-1)) */
-            secp256k1_scalar_add(sc, sc, &twon);  /* (z - z^2)(1 + ... + y^(n-1)) - z^3(1 + ... + 2^(n-1)) */
+            secp256k1_scalar_add(sc, sc, &twosum);  /* (z - z^2)(1 + ... + y^(n-1)) - z^3(1 + ... + 2^(n-1)) */
             secp256k1_scalar_negate(&tmp, &ctx->t);
             secp256k1_scalar_add(sc, sc, &tmp);    /* (z - z^2)(1 + ... + y^n) - z^3(1 + ... + 2^n) - t */
             secp256k1_scalar_mul(sc, sc, &ctx->randomizer61);
             *pt = *ctx->asset;
             break;
         }
-        /* S^x in eq (62) */
-        case 1:
-            *sc = ctx->x;
-            *pt = ctx->s;
-            break;
-        /* V^z^2 in eq (61) */
-        case 2:
-            secp256k1_scalar_mul(sc, &ctx->zsq, &ctx->randomizer61);
-            *pt = *ctx->commit;
-            break;
         /* T1^x in eq (61) */
         case 3:
             secp256k1_scalar_mul(sc, &ctx->x, &ctx->randomizer61);
@@ -109,13 +138,14 @@ static int secp256k1_bulletproof_rangeproof_vfy_callback(secp256k1_scalar *sc, s
             secp256k1_scalar_mul(sc, sc, &ctx->randomizer61);
             *pt = ctx->t2;
             break;
-        /* A in eq (61) */
-        case 5:
-            *pt = ctx->a;
-            secp256k1_scalar_set_int(sc, 1);
-            break;
+        /* V^z^2 in eq (61) */
         default:
-            VERIFY_CHECK(!"bulletproof: too many points added by rangeproof_verify_impl to inner_product_verify_impl");
+            VERIFY_CHECK(ctx->count < 5 + ctx->n_commits);
+
+            secp256k1_scalar_mul(sc, &ctx->zsq, &ctx->randomizer61);
+            secp256k1_scalar_mul(&ctx->zsq, &ctx->zsq, &ctx->z);
+            *pt = ctx->commit[ctx->count - 5];
+            break;
         }
         secp256k1_scalar_mul(sc, sc, randomizer);
         ctx->count++;
@@ -123,8 +153,8 @@ static int secp256k1_bulletproof_rangeproof_vfy_callback(secp256k1_scalar *sc, s
     return 1;
 }
 
-static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, const unsigned char **proof, size_t *plen, size_t n_proofs, size_t nbits, const secp256k1_ge *commitp, const secp256k1_ge *genp, const secp256k1_ge *geng, const secp256k1_ge *genh, const unsigned char *extra_commit, size_t extra_commit_len) {
-    const size_t depth = CTZ(nbits);
+static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, const unsigned char **proof, size_t *plen, size_t n_proofs, size_t nbits, const secp256k1_ge *commitp, size_t n_commits, const secp256k1_ge *genp, const secp256k1_ge *geng, const secp256k1_ge *genh, const unsigned char *extra_commit, size_t extra_commit_len) {
+    const size_t depth = secp256k1_ceil_lg(nbits * n_commits);
     secp256k1_bulletproof_vfy_ecmult_context ecmult_data[10];
     secp256k1_bulletproof_innerproduct_context innp_ctx[10];
     size_t i;
@@ -149,9 +179,12 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
         secp256k1_scalar taux, mu, a, b;
         secp256k1_ge age, sge;
         int overflow;
+        size_t j;
 
         /* Commit to all input data: pedersen commit, asset generator, extra_commit */
-        secp256k1_bulletproof_update_commit(commit, &commitp[i], &genp[i]);
+        for (j = 0; j < n_commits; j++) {
+            secp256k1_bulletproof_update_commit(commit, &commitp[j], &genp[0]);
+        }
         if (extra_commit != NULL) {
             secp256k1_sha256_initialize(&sha256);
             secp256k1_sha256_write(&sha256, commit, 32);
@@ -228,10 +261,11 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
         /* Verify inner product proof */
         ecmult_data[i].a = age;
         ecmult_data[i].s = sge;
-        ecmult_data[i].n = nbits;
+        ecmult_data[i].n = nbits * n_commits;
         ecmult_data[i].count = 0;
         ecmult_data[i].asset = genp;
         ecmult_data[i].commit = commitp;
+        ecmult_data[i].n_commits = n_commits;
         secp256k1_scalar_mul(&taux, &taux, &ecmult_data[i].randomizer61);
         secp256k1_scalar_add(&mu, &mu, &taux);
 
@@ -244,10 +278,10 @@ static int secp256k1_bulletproof_rangeproof_verify_impl(const secp256k1_ecmult_c
         memcpy(innp_ctx[i].commit, commit, 32);
         innp_ctx[i].rangeproof_cb = secp256k1_bulletproof_rangeproof_vfy_callback;
         innp_ctx[i].rangeproof_cb_data = (void *) &ecmult_data[i];
-        innp_ctx[i].n_extra_rangeproof_points = 6;
+        innp_ctx[i].n_extra_rangeproof_points = 5 + n_commits;
     }
 
-    return secp256k1_bulletproof_inner_product_verify_impl(ecmult_ctx, scratch, geng, genh, 1 << depth, innp_ctx, n_proofs);
+    return secp256k1_bulletproof_inner_product_verify_impl(ecmult_ctx, scratch, geng, genh, 1u << depth, innp_ctx, n_proofs);
 }
 
 typedef struct {
@@ -256,44 +290,59 @@ typedef struct {
     secp256k1_scalar z;
     secp256k1_scalar yn;
     secp256k1_scalar z22n;
-    uint64_t val;
+    const uint64_t *val;
+    size_t n_vals;
+    size_t nbits;
+    size_t count;
 } secp256k1_bulletproof_lr_generator;
 
-static void secp256k1_lr_generator_init(secp256k1_bulletproof_lr_generator *generator, const secp256k1_rfc6979_hmac_sha256 *rng, const secp256k1_scalar *y, const secp256k1_scalar *z, uint64_t val) {
+static void secp256k1_lr_generator_init(secp256k1_bulletproof_lr_generator *generator, const secp256k1_rfc6979_hmac_sha256 *rng, const secp256k1_scalar *y, const secp256k1_scalar *z, size_t nbits, const uint64_t *val, size_t n_vals) {
     memcpy(&generator->rng, rng, sizeof(*rng));
     generator->y = *y;
     generator->z = *z;
     secp256k1_scalar_set_int(&generator->yn, 1);
-    secp256k1_scalar_sqr(&generator->z22n, z);
+    generator->nbits = nbits;
     generator->val = val;
+    generator->n_vals = n_vals;
+    generator->count = 0;
 }
 
 static void secp256k1_lr_generator_finalize(secp256k1_bulletproof_lr_generator *generator) {
     secp256k1_rfc6979_hmac_sha256_finalize(&generator->rng);
-    generator->val = 0;
 }
 
 static void secp256k1_lr_generate(secp256k1_bulletproof_lr_generator *generator, secp256k1_scalar *lout, secp256k1_scalar *rout, const secp256k1_scalar *x) {
+    const size_t commit_idx = generator->count / generator->nbits;
+    const size_t bit_idx = generator->count % generator->nbits;
+    const int bit = (generator->val[commit_idx] >> bit_idx) & 1;
     secp256k1_scalar sl, sr;
     secp256k1_scalar negz;
+
+    if (bit_idx == 0) {
+        size_t i;
+        secp256k1_scalar_sqr(&generator->z22n, &generator->z);
+        for (i = 0; i < commit_idx; i++) {
+            secp256k1_scalar_mul(&generator->z22n, &generator->z22n, &generator->z);
+        }
+    }
 
     secp256k1_bulletproof_genrand_pair(&generator->rng, &sl, &sr);
     secp256k1_scalar_mul(&sl, &sl, x);
     secp256k1_scalar_mul(&sr, &sr, x);
 
-    secp256k1_scalar_set_int(lout, generator->val & 1);
+    secp256k1_scalar_set_int(lout, bit);
     secp256k1_scalar_negate(&negz, &generator->z);
     secp256k1_scalar_add(lout, lout, &negz);
     secp256k1_scalar_add(lout, lout, &sl);
 
-    secp256k1_scalar_set_int(rout, 1 - (generator->val & 1));
+    secp256k1_scalar_set_int(rout, 1 - bit);
     secp256k1_scalar_negate(rout, rout);
     secp256k1_scalar_add(rout, rout, &generator->z);
     secp256k1_scalar_add(rout, rout, &sr);
     secp256k1_scalar_mul(rout, rout, &generator->yn);
     secp256k1_scalar_add(rout, rout, &generator->z22n);
 
-    generator->val >>= 1;
+    generator->count++;
     secp256k1_scalar_mul(&generator->yn, &generator->yn, &generator->y);
     secp256k1_scalar_add(&generator->z22n, &generator->z22n, &generator->z22n);
 }
@@ -334,12 +383,12 @@ static int secp256k1_bulletproof_abgh_callback(secp256k1_scalar *sc, secp256k1_g
  * The non-bold `h` in the Bulletproofs paper corresponds to our secp256k1_ge_const_g
  * while the non-bold `g` corresponds to the asset type `genp`.
  */
-static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_gen_context *ecmult_gen_ctx, const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, unsigned char *proof, size_t *plen, const size_t nbits, const uint64_t value, const secp256k1_scalar *blind, const secp256k1_ge *commitp, const secp256k1_ge *genp, const secp256k1_ge *geng, const secp256k1_ge *genh, const unsigned char *nonce, const unsigned char *extra_commit, size_t extra_commit_len) {
+static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_gen_context *ecmult_gen_ctx, const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, unsigned char *proof, size_t *plen, const size_t nbits, const uint64_t *value, const secp256k1_scalar *blind, const secp256k1_ge *commitp, size_t n_commits, const secp256k1_ge *genp, const secp256k1_ge *geng, const secp256k1_ge *genh, const unsigned char *nonce, const unsigned char *extra_commit, size_t extra_commit_len) {
     secp256k1_bulletproof_lr_generator lr_gen;
     secp256k1_bulletproof_abgh_data abgh_data;
     secp256k1_scalar zero;
     secp256k1_sha256 sha256;
-    const size_t depth = CTZ(nbits);
+    const size_t depth = secp256k1_ceil_lg(nbits * n_commits);
     unsigned char commit[32] = {0};
     secp256k1_scalar alpha, rho;
     secp256k1_scalar t, t0, t1, t2;
@@ -351,7 +400,7 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     secp256k1_scalar tmps;
     secp256k1_gej aj, sj;
     secp256k1_gej tmpj;
-    size_t i;
+    size_t i, j;
     int overflow;
     unsigned char rngseed[64];
     secp256k1_rfc6979_hmac_sha256 rng;
@@ -362,8 +411,10 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     if (POPCOUNT(nbits) != 1 || nbits > MAX_NBITS) {
         return 0;
     }
-    if (nbits < 64 && value >= (1ull << nbits)) {
-        return 0;
+    for (i = 0; i < n_commits; i++) {
+        if (nbits < 64 && value[i] >= (1ull << nbits)) {
+            return 0;
+        }
     }
     if (*plen < (9 + 2*depth) * 32 + (4 + 2*depth + 7) / 8) {
         return 0;
@@ -374,7 +425,9 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     secp256k1_scalar_clear(&zero);
 
     /* Commit to all input data: pedersen commit, asset generator, extra_commit */
-    secp256k1_bulletproof_update_commit(commit, commitp, genp);
+    for (i = 0; i < n_commits; i++) {
+        secp256k1_bulletproof_update_commit(commit, &commitp[i], genp); /* TODO be less stupid about this */
+    }
     if (extra_commit != NULL) {
         secp256k1_sha256_initialize(&sha256);
         secp256k1_sha256_write(&sha256, commit, 32);
@@ -393,27 +446,29 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     lr_gen.rng = rng;
     secp256k1_ecmult_gen(ecmult_gen_ctx, &aj, &alpha);
     secp256k1_ecmult_gen(ecmult_gen_ctx, &sj, &rho);
-    for (i = 0; i < nbits; i++) {
-        secp256k1_scalar sl, sr;
-        size_t al = !!(value & (1ull << i));
-        secp256k1_ge aterm = genh[i];
-        secp256k1_ge sterm;
-        secp256k1_gej stermj;
+    for (i = 0; i < n_commits; i++) {
+        for (j = 0; j < nbits; j++) {
+            secp256k1_scalar sl, sr;
+            size_t al = !!(value[i] & (1ull << j));
+            secp256k1_ge aterm = genh[i * nbits + j];
+            secp256k1_ge sterm;
+            secp256k1_gej stermj;
 
-        secp256k1_bulletproof_genrand_pair(&lr_gen.rng, &sl, &sr);
+            secp256k1_bulletproof_genrand_pair(&lr_gen.rng, &sl, &sr);
 
-        secp256k1_ge_neg(&aterm, &aterm);
-        secp256k1_fe_cmov(&aterm.x, &geng[i].x, al);
-        secp256k1_fe_cmov(&aterm.y, &geng[i].y, al);
+            secp256k1_ge_neg(&aterm, &aterm);
+            secp256k1_fe_cmov(&aterm.x, &geng[i * nbits + j].x, al);
+            secp256k1_fe_cmov(&aterm.y, &geng[i * nbits + j].y, al);
 
-        secp256k1_gej_add_ge(&aj, &aj, &aterm);
+            secp256k1_gej_add_ge(&aj, &aj, &aterm);
 
-        secp256k1_ecmult_const(&stermj, &geng[i], &sl, 256);
-        secp256k1_ge_set_gej(&sterm, &stermj);
-        secp256k1_gej_add_ge(&sj, &sj, &sterm);
-        secp256k1_ecmult_const(&stermj, &genh[i], &sr, 256);
-        secp256k1_ge_set_gej(&sterm, &stermj);
-        secp256k1_gej_add_ge(&sj, &sj, &sterm);
+            secp256k1_ecmult_const(&stermj, &geng[i * nbits + j], &sl, 256);
+            secp256k1_ge_set_gej(&sterm, &stermj);
+            secp256k1_gej_add_ge(&sj, &sj, &sterm);
+            secp256k1_ecmult_const(&stermj, &genh[i * nbits + j], &sr, 256);
+            secp256k1_ge_set_gej(&sterm, &stermj);
+            secp256k1_gej_add_ge(&sj, &sj, &sterm);
+        }
     }
     secp256k1_rfc6979_hmac_sha256_finalize(&lr_gen.rng);
 
@@ -435,9 +490,9 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
 
     /* Compute coefficients t0, t1, t2 of the <l, r> polynomial */
     /* t0 = l(0) dot r(0) */
-    secp256k1_lr_generator_init(&lr_gen, &rng, &y, &z, value);
+    secp256k1_lr_generator_init(&lr_gen, &rng, &y, &z, nbits, value, n_commits);
     secp256k1_scalar_clear(&t0);
-    for (i = 0; i < nbits; i++) {
+    for (i = 0; i < nbits * n_commits; i++) {
         secp256k1_scalar l, r;
         secp256k1_lr_generate(&lr_gen, &l, &r, &zero);
         secp256k1_scalar_mul(&l, &l, &r);
@@ -446,9 +501,9 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     secp256k1_lr_generator_finalize(&lr_gen);
 
     /* A = t0 + t1 + t2 = l(1) dot r(1) */
-    secp256k1_lr_generator_init(&lr_gen, &rng, &y, &z, value);
+    secp256k1_lr_generator_init(&lr_gen, &rng, &y, &z, nbits, value, n_commits);
     secp256k1_scalar_clear(&t1);
-    for (i = 0; i < nbits; i++) {
+    for (i = 0; i < nbits * n_commits; i++) {
         secp256k1_scalar one;
         secp256k1_scalar l, r;
         secp256k1_scalar_set_int(&one, 1);
@@ -459,9 +514,9 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     secp256k1_lr_generator_finalize(&lr_gen);
 
     /* B = t0 - t1 + t2 = l(-1) dot r(-1) */
-    secp256k1_lr_generator_init(&lr_gen, &rng, &y, &z, value);
+    secp256k1_lr_generator_init(&lr_gen, &rng, &y, &z, nbits, value, n_commits);
     secp256k1_scalar_clear(&t2);
-    for (i = 0; i < nbits; i++) {
+    for (i = 0; i < nbits * n_commits; i++) {
         secp256k1_scalar negone;
         secp256k1_scalar l, r;
         secp256k1_scalar_set_int(&negone, 1);
@@ -503,8 +558,11 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     secp256k1_scalar_mul(&taux, &tau1, &x);
     secp256k1_scalar_mul(&tmps, &tau2, &xsq);
     secp256k1_scalar_add(&taux, &taux, &tmps);
-    secp256k1_scalar_mul(&tmps, &zsq, blind);
-    secp256k1_scalar_add(&taux, &taux, &tmps);
+    for (i = 0; i < n_commits; i++) {
+        secp256k1_scalar_mul(&tmps, &zsq, &blind[i]);
+        secp256k1_scalar_add(&taux, &taux, &tmps);
+        secp256k1_scalar_mul(&zsq, &zsq, &z);
+    }
 
     secp256k1_scalar_mul(&mu, &rho, &x);
     secp256k1_scalar_add(&mu, &mu, &alpha);
@@ -535,7 +593,7 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     secp256k1_scalar_set_int(&abgh_data.mul, 1);
     abgh_data.geng = geng;
     abgh_data.genh = genh;
-    secp256k1_lr_generator_init(&abgh_data.lr_gen, &rng, &y, &z, value);
+    secp256k1_lr_generator_init(&abgh_data.lr_gen, &rng, &y, &z, nbits, value, n_commits);
     secp256k1_bulletproof_inner_product_prove_impl(ecmult_ctx, scratch, &a, &b, &out_pt[4], &out_pt[4 + depth], 1 << depth, secp256k1_bulletproof_abgh_callback, (void *) &abgh_data, commit);
     secp256k1_lr_generator_finalize(&abgh_data.lr_gen);
 

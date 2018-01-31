@@ -34,7 +34,7 @@ int secp256k1_bulletproof_rangeproof_verify(const secp256k1_context* ctx, secp25
     secp256k1_generator_load(&genp, gen);
     secp256k1_pedersen_commitment_load(&commitp, commit);
 
-    return secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, &proof, &plen, 1, nbits, &commitp, &genp, &secp256k1_ge_const_gi[0], &secp256k1_ge_const_gi[64], extra_commit, extra_commit_len);
+    return secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, &proof, &plen, 1, nbits, &commitp, 1, &genp, &secp256k1_ge_const_gi[0], &secp256k1_ge_const_gi[64], extra_commit, extra_commit_len);
 }
 
 int secp256k1_bulletproof_rangeproof_verify_multi(const secp256k1_context* ctx, secp256k1_scratch_space *scratch, const unsigned char *proof, size_t plen, const secp256k1_pedersen_commitment* commit, size_t nbits, const secp256k1_generator* gen, const unsigned char *extra_commit, size_t extra_commit_len) {
@@ -58,7 +58,7 @@ for (i = 0; i < sizeof(plens) / sizeof(plens[0]); i++) {
     plens[i] = plen;
 }
 
-    return secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, proof_ptr, plens, 1, nbits, commitp, genp, &secp256k1_ge_const_gi[0], &secp256k1_ge_const_gi[64], extra_commit, extra_commit_len);
+    return secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, proof_ptr, plens, 1, nbits, commitp, 1, genp, &secp256k1_ge_const_gi[0], &secp256k1_ge_const_gi[64], extra_commit, extra_commit_len);
 }
 
 int secp256k1_bulletproof_rangeproof_prove(const secp256k1_context* ctx, secp256k1_scratch_space *scratch, unsigned char *proof, size_t *plen, uint64_t value, const unsigned char *blind,
@@ -92,7 +92,7 @@ int secp256k1_bulletproof_rangeproof_prove(const secp256k1_context* ctx, secp256
     secp256k1_ge_set_gej(&commitp, &commitj);
 
     return secp256k1_bulletproof_rangeproof_prove_impl(&ctx->ecmult_gen_ctx, &ctx->ecmult_ctx, scratch,
-        proof, plen, nbits, value, &blinds, &commitp, &genp, &secp256k1_ge_const_gi[0], &secp256k1_ge_const_gi[64], nonce, extra_commit, extra_commit_len);
+        proof, plen, nbits, &value, &blinds, &commitp, 1, &genp, &secp256k1_ge_const_gi[0], &secp256k1_ge_const_gi[64], nonce, extra_commit, extra_commit_len);
 }
 
 #endif

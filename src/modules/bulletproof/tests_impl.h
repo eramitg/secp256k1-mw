@@ -253,12 +253,55 @@ void test_bulletproof_rangeproof(size_t nbits, size_t expected_size, const secp2
     secp256k1_bulletproof_update_commit(commit[0], &commitp[0], &secp256k1_ge_const_g2);
     secp256k1_bulletproof_update_commit(commit[1], &commitp[1], &secp256k1_ge_const_g2);
 
-    CHECK(secp256k1_bulletproof_rangeproof_prove_impl(&ctx->ecmult_gen_ctx, &ctx->ecmult_ctx, scratch, proof, &plen[0], nbits, v, &blind, commitp, &secp256k1_ge_const_g2, geng, genh, nonce, NULL, 0) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_prove_impl(&ctx->ecmult_gen_ctx, &ctx->ecmult_ctx, scratch, proof, &plen[0], nbits, &v, &blind, commitp, 1, &secp256k1_ge_const_g2, geng, genh, nonce, NULL, 0) == 1);
     CHECK(plen[0] == expected_size);
     plen[1] = plen[0];
-    CHECK(secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, proof_ptr, plen, 2, nbits, commitp, genp, geng, genh, NULL, 0) == 1);
+    CHECK(secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, proof_ptr, plen, 2, nbits, commitp, 1, genp, geng, genh, NULL, 0) == 1);
 
     secp256k1_scratch_destroy(scratch);
+}
+
+void test_bulletproof_rangeproof_aggregate(size_t nbits, size_t n_commits, size_t expected_size, const secp256k1_ge *geng, const secp256k1_ge *genh) {
+    unsigned char proof[1024];
+    const unsigned char *proof_ptr = proof;
+    size_t plen = sizeof(proof);
+    secp256k1_scalar *blind = (secp256k1_scalar *)checked_malloc(&ctx->error_callback, n_commits * sizeof(*blind));
+    uint64_t *v = (uint64_t *)checked_malloc(&ctx->error_callback, n_commits * sizeof(*v));
+    secp256k1_ge *commitp = (secp256k1_ge *)checked_malloc(&ctx->error_callback, n_commits * sizeof(*commitp));
+    secp256k1_ge genp;
+    unsigned char commit[32] = {0};
+    unsigned char nonce[32] = "mary, mary quite contrary how do";
+    size_t i;
+
+    secp256k1_scratch *scratch = secp256k1_scratch_space_create(ctx, 1000000, 10000000);
+
+    genp = secp256k1_ge_const_g2;
+    for (i = 0; i < n_commits; i++) {
+        secp256k1_scalar vs;
+        secp256k1_gej commitj;
+        secp256k1_gej genpj;
+
+        v[i] = 223 * i; /* dice-roll random # */
+        if (v[i] >> nbits > 0) {
+            v[i] = 0;
+        }
+        secp256k1_scalar_set_u64(&vs, v[i]);
+        random_scalar_order(&blind[i]);
+        secp256k1_gej_set_ge(&genpj, &genp);
+        secp256k1_ecmult(&ctx->ecmult_ctx, &commitj, &genpj, &vs, &blind[i]);
+        secp256k1_ge_set_gej(&commitp[i], &commitj);
+
+        secp256k1_bulletproof_update_commit(commit, &commitp[i], &genp);
+    }
+
+    CHECK(secp256k1_bulletproof_rangeproof_prove_impl(&ctx->ecmult_gen_ctx, &ctx->ecmult_ctx, scratch, proof, &plen, nbits, v, blind, commitp, n_commits, &genp, geng, genh, nonce, NULL, 0) == 1);
+    CHECK(plen == expected_size);
+    CHECK(secp256k1_bulletproof_rangeproof_verify_impl(&ctx->ecmult_ctx, scratch, &proof_ptr, &plen, 1, nbits, commitp, n_commits, &genp, geng, genh, NULL, 0) == 1);
+
+    secp256k1_scratch_destroy(scratch);
+    free(commitp);
+    free(v);
+    free(blind);
 }
 
 void test_bulletproof_circuit(const secp256k1_ge *geng, const secp256k1_ge *genh) {
@@ -358,6 +401,9 @@ void run_bulletproof_tests(void) {
     test_bulletproof_rangeproof(16, 546, geng, genh);
     test_bulletproof_rangeproof(32, 610, geng, genh);
     test_bulletproof_rangeproof(64, 674, geng, genh);
+
+    test_bulletproof_rangeproof_aggregate(64, 1, 674, geng, genh);
+    test_bulletproof_rangeproof_aggregate(8, 2, 546, geng, genh);
 
     test_bulletproof_circuit(geng, genh);
 
