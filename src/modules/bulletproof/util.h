@@ -7,21 +7,21 @@
 #ifndef SECP256K1_MODULE_BULLETPROOF_UTIL
 #define SECP256K1_MODULE_BULLETPROOF_UTIL
 
-SECP256K1_INLINE static size_t secp256k1_ceil_lg(size_t n) {
-    VERIFY_CHECK(n > 0);
+/* floor(log2(n)) which returns 0 for 0, since this is used to estimate proof sizes */
+SECP256K1_INLINE static size_t secp256k1_floor_lg(size_t n) {
     switch (n) {
+    case 0: return 0;
     case 1: return 0;
     case 2: return 1;
-    case 3: return 2;
+    case 3: return 1;
     case 4: return 2;
-    case 5: return 3;
-    case 6: return 3;
-    case 7: return 3;
+    case 5: return 2;
+    case 6: return 2;
+    case 7: return 2;
     case 8: return 3;
     default: {
         size_t i = 0;
-        n--;
-        while (n > 0) {
+        while (n > 1) {
             n /= 2;
             i++;
         }
