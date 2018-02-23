@@ -126,7 +126,7 @@ void secp256k1_circuit_destroy(const secp256k1_context *ctx, secp256k1_bulletpro
 }
 
 int secp256k1_bulletproof_circuit_prove(const secp256k1_context* ctx, secp256k1_scratch_space *scratch, unsigned char *proof, size_t *plen, secp256k1_bulletproof_circuit *circ, unsigned char *nonce) {
-#include "circuits/jubjub-3072.assn"
+#include "circuits/SHA2.assn"
 
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(scratch != NULL);

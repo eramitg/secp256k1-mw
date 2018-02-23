@@ -72,8 +72,6 @@ static int test_bulletproof_offset_vfy_callback(secp256k1_scalar *sc, secp256k1_
 }
 
 typedef struct {
-    const secp256k1_ge *geng;
-    const secp256k1_ge *genh;
     const secp256k1_scalar *a_arr;
     const secp256k1_scalar *b_arr;
 } secp256k1_bulletproof_ip_test_abgh_data;
@@ -83,13 +81,11 @@ static int secp256k1_bulletproof_ip_test_abgh_callback(secp256k1_scalar *sc, sec
     secp256k1_bulletproof_ip_test_abgh_data *cbctx = (secp256k1_bulletproof_ip_test_abgh_data *) data;
     const int is_g = idx % 2 == 0;
 
-    random_scalar_order(sc);
+    (void) pt;
     if (is_g) {
         *sc = cbctx->a_arr[idx / 2];
-        *pt = cbctx->geng[idx / 2];
     } else {
         *sc = cbctx->b_arr[idx / 2];
-        *pt = cbctx->genh[idx / 2];
     }
     return 1;
 }
@@ -101,6 +97,7 @@ void test_bulletproof_inner_product(size_t n, const secp256k1_ge *geng, const se
     secp256k1_scalar *a_arr = (secp256k1_scalar *)checked_malloc(&ctx->error_callback, n * sizeof(*a_arr));
     secp256k1_scalar *b_arr = (secp256k1_scalar *)checked_malloc(&ctx->error_callback, n * sizeof(*b_arr));
     unsigned char commit[32] = "hash of P, c, etc. all that jazz";
+    secp256k1_scalar one;
     size_t j;
     test_bulletproof_offset_context offs_ctx;
     secp256k1_bulletproof_ip_test_abgh_data abgh_data;
@@ -115,8 +112,6 @@ void test_bulletproof_inner_product(size_t n, const secp256k1_ge *geng, const se
         random_scalar_order(&b_arr[j]);
     }
 
-    abgh_data.geng = geng;
-    abgh_data.genh = genh;
     abgh_data.a_arr = a_arr;
     abgh_data.b_arr = b_arr;
 
@@ -125,7 +120,8 @@ void test_bulletproof_inner_product(size_t n, const secp256k1_ge *geng, const se
     secp256k1_scalar_clear(&offs_ctx.skew_sc);
     offs_ctx.n = n;
 
-    CHECK(secp256k1_bulletproof_inner_product_prove_impl(&ctx->ecmult_ctx, scratch, proof, &plen, n, secp256k1_bulletproof_ip_test_abgh_callback, (void *) &abgh_data, commit) == 1);
+    secp256k1_scalar_set_int(&one, 1);
+    CHECK(secp256k1_bulletproof_inner_product_prove_impl(&ctx->ecmult_ctx, scratch, proof, &plen, geng, genh, &one, n, secp256k1_bulletproof_ip_test_abgh_callback, (void *) &abgh_data, commit) == 1);
 
     innp_ctx.proof = proof;
     innp_ctx.proof_len = plen;

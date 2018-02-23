@@ -338,30 +338,20 @@ static void secp256k1_lr_generate(secp256k1_bulletproof_lr_generator *generator,
 }
 
 typedef struct {
-    secp256k1_scalar yinv;
     secp256k1_scalar x;
-    secp256k1_scalar mul;
     secp256k1_scalar cache;
     secp256k1_bulletproof_lr_generator lr_gen;
-    const secp256k1_ge *geng;
-    const secp256k1_ge *genh;
 } secp256k1_bulletproof_abgh_data;
 
 static int secp256k1_bulletproof_abgh_callback(secp256k1_scalar *sc, secp256k1_ge *pt, size_t idx, void *data) {
     secp256k1_bulletproof_abgh_data *ctx = (secp256k1_bulletproof_abgh_data *) data;
     const int is_g = idx % 2 == 0;
 
+    (void) pt;
     if (is_g) {
         secp256k1_lr_generate(&ctx->lr_gen, sc, &ctx->cache, &ctx->x);
-        *pt = ctx->geng[idx / 2];
     } else {
-        /* Map h -> h' (eqn 59) */
-        secp256k1_gej genhj;
-        secp256k1_ecmult_const(&genhj, &ctx->genh[idx / 2], &ctx->mul, 256);
         *sc = ctx->cache;
-        secp256k1_ge_set_gej(pt, &genhj);
-
-        secp256k1_scalar_mul(&ctx->mul, &ctx->mul, &ctx->yinv);
     }
 
     return 1;
@@ -570,14 +560,11 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     secp256k1_sha256_finalize(&sha256, commit);
 
     /* Compute l and r, do inner product proof */
-    secp256k1_scalar_inverse_var(&abgh_data.yinv, &y);
     abgh_data.x = x;
-    secp256k1_scalar_set_int(&abgh_data.mul, 1);
-    abgh_data.geng = geng;
-    abgh_data.genh = genh;
     secp256k1_lr_generator_init(&abgh_data.lr_gen, &rng, &y, &z, nbits, value, n_commits);
     *plen -= 64 + 128 + 1;
-    if (secp256k1_bulletproof_inner_product_prove_impl(ecmult_ctx, scratch, &proof[64 + 128 + 1], plen, nbits * n_commits, secp256k1_bulletproof_abgh_callback, (void *) &abgh_data, commit) == 0) {
+    secp256k1_scalar_inverse_var(&y, &y);
+    if (secp256k1_bulletproof_inner_product_prove_impl(ecmult_ctx, scratch, &proof[64 + 128 + 1], plen, geng, genh, &y, nbits * n_commits, secp256k1_bulletproof_abgh_callback, (void *) &abgh_data, commit) == 0) {
         return 0;
     }
     *plen += 64 + 128 + 1;
