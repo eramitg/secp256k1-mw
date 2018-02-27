@@ -136,7 +136,7 @@ static int secp256k1_bulletproof_innerproduct_vfy_ecmult_callback(secp256k1_scal
             /* Compute the normal inner-product scalar... */
             if (cache_idx > 0) {
                 if (idx < ctx->n_gen_pairs) {
-                    const size_t xsq_idx = ctx->floor_lg_gens - 1 - CTZ(idx);
+                    const size_t xsq_idx = CTZ(idx);
                     secp256k1_scalar_mul(&ctx->proof[i].xcache[cache_idx], &ctx->proof[i].xcache[cache_idx - 1], &ctx->proof[i].xsq[xsq_idx]);
                     if (idx == ctx->n_gen_pairs - 1) {
                         ctx->proof[i].xcache[0] = ctx->proof[i].xcache[cache_idx];
@@ -149,7 +149,7 @@ static int secp256k1_bulletproof_innerproduct_vfy_ecmult_callback(secp256k1_scal
                         &ctx->proof[i].xsqinv[prev_cache_idx]
                     );
                 } else {
-                    const size_t xsq_idx = ctx->floor_lg_gens - 1 - CTZ(idx);
+                    const size_t xsq_idx = CTZ(idx);
                     secp256k1_scalar_mul(&ctx->proof[i].xcache[cache_idx], &ctx->proof[i].xcache[cache_idx - 1], &ctx->proof[i].xsqinv[xsq_idx]);
                 }
             }
@@ -157,7 +157,7 @@ static int secp256k1_bulletproof_innerproduct_vfy_ecmult_callback(secp256k1_scal
 
             /* When going through the G generators, compute the x-inverses as side effects */
             if (idx < ctx->n_gen_pairs && POPCOUNT(idx) == ctx->floor_lg_gens - 1) {  /* if the scalar has only one 0, i.e. only one inverse... */
-                const size_t xsqinv_idx = ctx->floor_lg_gens - 1 - CTZ(~idx);
+                const size_t xsqinv_idx = CTZ(~idx);
                 /* ...multiply it by the total inverse, to get x_j^-2 */
                 secp256k1_scalar_mul(&ctx->proof[i].xsqinv[xsqinv_idx], &ctx->proof[i].xcache[cache_idx], &ctx->proof[i].xsqinv_mask);
             }
@@ -389,72 +389,84 @@ typedef struct {
     const secp256k1_ge *genh;
     const secp256k1_scalar *a;
     const secp256k1_scalar *b;
-    size_t halfwidth;
+    size_t grouping;
     size_t n;
 } secp256k1_bulletproof_innerproduct_pf_ecmult_context;
 
+/* At each level i of recursion (i from 0 upto lg(vector size) - 1)
+ *   L = a_even . G_odd + b_odd . H_even (18)
+ * which, by expanding the generators into the original G's and H's
+ * and setting n = (1 << i), can be computed as follows:
+ *
+ * For j from 1 to [vector size],
+ *    1. Use H[j] or G[j] as generator, starting with H and switching
+ *       every n.
+ *    2. Start with b1 with H and a0 with G, and increment by 2 each switch.
+ *    3. For k = 1, 2, 4, ..., n/2, use the same algorithm to choose
+ *       between a and b to choose between x and x^-1, except using
+ *       k in place of n. With H's choose x then x^-1, with G's choose
+ *       x^-1 then x.
+ *
+ * For R everything is the same except swap G/H and a/b and x/x^-1.
+ */
 static int secp256k1_bulletproof_innerproduct_pf_ecmult_callback_l(secp256k1_scalar *sc, secp256k1_ge *pt, size_t idx, void *data) {
     secp256k1_bulletproof_innerproduct_pf_ecmult_context *ctx = (secp256k1_bulletproof_innerproduct_pf_ecmult_context *) data;
-    const secp256k1_ge *gh;
-    const secp256k1_scalar *ab;
-    size_t n, i;
+    const size_t ab_idx = (idx / ctx->grouping) ^ 1;
+    size_t i;
 
-    if ((idx / ctx->halfwidth) % 2 == 0) {
-        gh = ctx->genh;
-        ab = &ctx->b[ctx->halfwidth];
+    /* steps 1/2 */
+    if ((idx / ctx->grouping) % 2 == 0) {
+        *pt = ctx->genh[idx];
+        *sc = ctx->b[ab_idx];
+        /* Map h -> h' (eqn 59) */
+        secp256k1_scalar_mul(sc, sc, &ctx->yinvn);
     } else {
-        gh = ctx->geng;
-        ab = &ctx->a[0];
+        *pt = ctx->geng[idx];
+        *sc = ctx->a[ab_idx];
     }
 
-    *sc = ab[idx % ctx->halfwidth];
-    *pt = gh[idx];
-
-    for (n = ctx->n / 2, i = 0; n > ctx->halfwidth; n /= 2, i++) {
-        if ((((idx / ctx->halfwidth) % 2) ^ ((idx / n) % 2)) == 0) {
+    /* step 3 */
+    for (i = 0; (1u << i) < ctx->grouping; i++) {
+        size_t grouping = (1u << i);
+        if ((((idx / grouping) % 2) ^ ((idx / ctx->grouping) % 2)) == 0) {
             secp256k1_scalar_mul(sc, sc, &ctx->x[i]);
         } else {
             secp256k1_scalar_mul(sc, sc, &ctx->xinv[i]);
         }
     }
 
-    if (gh == ctx->genh) {
-        /* Map h -> h' (eqn 59) */
-        secp256k1_scalar_mul(sc, sc, &ctx->yinvn);
-    }
     secp256k1_scalar_mul(&ctx->yinvn, &ctx->yinvn, ctx->yinv);
     return 1;
 }
 
+/* Identical code except `== 0` changed to `== 1` twice, and the
+ * `+ 1` from Step 1/2 was moved to the other if branch. */
 static int secp256k1_bulletproof_innerproduct_pf_ecmult_callback_r(secp256k1_scalar *sc, secp256k1_ge *pt, size_t idx, void *data) {
     secp256k1_bulletproof_innerproduct_pf_ecmult_context *ctx = (secp256k1_bulletproof_innerproduct_pf_ecmult_context *) data;
-    const secp256k1_ge *gh;
-    const secp256k1_scalar *ab;
-    size_t n, i;
+    const size_t ab_idx = (idx / ctx->grouping) ^ 1;
+    size_t i;
 
-    if ((idx / ctx->halfwidth) % 2 == 0) {
-        gh = ctx->geng;
-        ab = &ctx->a[ctx->halfwidth];
+    /* steps 1/2 */
+    if ((idx / ctx->grouping) % 2 == 1) {
+        *pt = ctx->genh[idx];
+        *sc = ctx->b[ab_idx];
+        /* Map h -> h' (eqn 59) */
+        secp256k1_scalar_mul(sc, sc, &ctx->yinvn);
     } else {
-        gh = ctx->genh;
-        ab = &ctx->b[0];
+        *pt = ctx->geng[idx];
+        *sc = ctx->a[ab_idx];
     }
 
-    *sc = ab[idx % ctx->halfwidth];
-    *pt = gh[idx];
-
-    for (n = ctx->n / 2, i = 0; n > ctx->halfwidth; n /= 2, i++) {
-        if ((((idx / ctx->halfwidth) % 2) ^ ((idx / n) % 2)) == 0) {
-            secp256k1_scalar_mul(sc, sc, &ctx->xinv[i]);
-        } else {
+    /* step 3 */
+    for (i = 0; (1u << i) < ctx->grouping; i++) {
+        size_t grouping = (1u << i);
+        if ((((idx / grouping) % 2) ^ ((idx / ctx->grouping) % 2)) == 1) {
             secp256k1_scalar_mul(sc, sc, &ctx->x[i]);
+        } else {
+            secp256k1_scalar_mul(sc, sc, &ctx->xinv[i]);
         }
     }
 
-    if (gh == ctx->genh) {
-        /* Map h -> h' (eqn 59) */
-        secp256k1_scalar_mul(sc, sc, &ctx->yinvn);
-    }
     secp256k1_scalar_mul(&ctx->yinvn, &ctx->yinvn, ctx->yinv);
     return 1;
 }
@@ -557,18 +569,30 @@ static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult
         secp256k1_scalar tmps;
         size_t j;
 
-        pfdata.halfwidth = halfwidth;
+        pfdata.grouping = 1u << i;
 
         /* L */
-        secp256k1_scalar_dot_product(&tmps, &a_arr[0], &b_arr[halfwidth], halfwidth);
+        secp256k1_scalar_clear(&tmps);
+        for (j = 0; j < halfwidth; j++) {
+            secp256k1_scalar prod;
+            secp256k1_scalar_mul(&prod, &a_arr[2*j], &b_arr[2*j + 1]);
+            secp256k1_scalar_add(&tmps, &tmps, &prod);
+        }
         secp256k1_scalar_mul(&tmps, &tmps, &ux);
+
         secp256k1_scalar_set_int(&pfdata.yinvn, 1);
         secp256k1_ecmult_multi_var(ecmult_ctx, myscr, &tmplj, &tmps, &secp256k1_bulletproof_innerproduct_pf_ecmult_callback_l, (void *) &pfdata, n);
         secp256k1_ge_set_gej(&out_pt[pt_idx++], &tmplj);
 
         /* R */
-        secp256k1_scalar_dot_product(&tmps, &b_arr[0], &a_arr[halfwidth], halfwidth);
+        secp256k1_scalar_clear(&tmps);
+        for (j = 0; j < halfwidth; j++) {
+            secp256k1_scalar prod;
+            secp256k1_scalar_mul(&prod, &a_arr[2*j + 1], &b_arr[2*j]);
+            secp256k1_scalar_add(&tmps, &tmps, &prod);
+        }
         secp256k1_scalar_mul(&tmps, &tmps, &ux);
+
         secp256k1_scalar_set_int(&pfdata.yinvn, 1);
         secp256k1_ecmult_multi_var(ecmult_ctx, myscr, &tmprj, &tmps, &secp256k1_bulletproof_innerproduct_pf_ecmult_callback_r, (void *) &pfdata, n);
         secp256k1_ge_set_gej(&out_pt[pt_idx++], &tmprj);
@@ -583,13 +607,13 @@ static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult
 
         /* update scalar array */
         for (j = 0; j < halfwidth; j++) {
-            secp256k1_scalar_mul(&a_arr[j], &a_arr[j], &pfdata.x[i]);
-            secp256k1_scalar_mul(&tmps, &a_arr[j + halfwidth], &pfdata.xinv[i]);
-            secp256k1_scalar_add(&a_arr[j], &a_arr[j], &tmps);
+            secp256k1_scalar_mul(&a_arr[2*j], &a_arr[2*j], &pfdata.x[i]);
+            secp256k1_scalar_mul(&tmps, &a_arr[2*j + 1], &pfdata.xinv[i]);
+            secp256k1_scalar_add(&a_arr[j], &a_arr[2*j], &tmps);
 
-            secp256k1_scalar_mul(&b_arr[j], &b_arr[j], &pfdata.xinv[i]);
-            secp256k1_scalar_mul(&tmps, &b_arr[j + halfwidth], &pfdata.x[i]);
-            secp256k1_scalar_add(&b_arr[j], &b_arr[j], &tmps);
+            secp256k1_scalar_mul(&b_arr[2*j], &b_arr[2*j], &pfdata.xinv[i]);
+            secp256k1_scalar_mul(&tmps, &b_arr[2*j + 1], &pfdata.x[i]);
+            secp256k1_scalar_add(&b_arr[j], &b_arr[2*j], &tmps);
         }
 
         /* Explicit odd-recursion-level scalars */
