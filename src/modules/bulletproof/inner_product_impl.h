@@ -17,6 +17,8 @@
 #define POPCOUNT(x)	(__builtin_popcountl((unsigned long)(x)))  /* TODO make these portable */
 #define CTZ(x)	(__builtin_ctzl((unsigned long)(x)))
 
+#define IP_AB_SCALARS	4
+
 typedef int (secp256k1_bulletproof_vfy_callback)(secp256k1_scalar *sc, secp256k1_ge *pt, secp256k1_scalar *randomizer, size_t idx, void *data);
 
 /* used by callers to wrap a proof with surrounding context */
@@ -33,6 +35,7 @@ typedef struct {
 /* used internally */
 typedef struct {
     const secp256k1_bulletproof_innerproduct_context *proof;
+    secp256k1_scalar abinv[IP_AB_SCALARS];
     secp256k1_scalar xsq[SECP256K1_BULLETPROOF_MAX_DEPTH + 1];
     secp256k1_scalar xsqinv[SECP256K1_BULLETPROOF_MAX_DEPTH + 1];
     secp256k1_scalar xcache[SECP256K1_BULLETPROOF_MAX_DEPTH + 1];
@@ -52,9 +55,13 @@ typedef struct {
 } secp256k1_bulletproof_innerproduct_vfy_ecmult_context;
 
 size_t secp256k1_bulletproof_innerproduct_proof_length(size_t n) {
-    size_t bit_count = POPCOUNT(n);
-    size_t log = secp256k1_floor_lg(n);
-    return 32 * (1 + 2 * (bit_count + log)) + (log + 7) / 8;
+    if (n < IP_AB_SCALARS / 2) {
+        return 32 * (1 + 2 * n);
+    } else {
+        size_t bit_count = POPCOUNT(n);
+        size_t log = secp256k1_floor_lg(2 * n / IP_AB_SCALARS);
+        return 32 * (1 + 2 * (bit_count - 1 + log) + IP_AB_SCALARS) + (log + 7) / 8;
+    }
 }
 
 /* Bulletproof rangeproof verification comes down to a single multiexponentiation of the form
@@ -120,6 +127,7 @@ static int secp256k1_bulletproof_innerproduct_vfy_ecmult_callback(secp256k1_scal
 
     /* First 2N points use the standard Gi, Hi generators, and the scalars can be aggregated across proofs  */
     if (idx < 2 * ctx->n_gen_pairs) {
+        const size_t grouping = ctx->n_gen_pairs < IP_AB_SCALARS / 2 ? ctx->n_gen_pairs : IP_AB_SCALARS / 2;
         size_t i;
         /* TODO zero this point when appropriate for non-2^n numbers of pairs */
         if (idx < ctx->n_gen_pairs) {
@@ -135,28 +143,31 @@ static int secp256k1_bulletproof_innerproduct_vfy_ecmult_callback(secp256k1_scal
             VERIFY_CHECK(cache_idx < SECP256K1_BULLETPROOF_MAX_DEPTH);
             /* Compute the normal inner-product scalar... */
             if (cache_idx > 0) {
-                if (idx < ctx->n_gen_pairs) {
-                    const size_t xsq_idx = CTZ(idx);
-                    secp256k1_scalar_mul(&ctx->proof[i].xcache[cache_idx], &ctx->proof[i].xcache[cache_idx - 1], &ctx->proof[i].xsq[xsq_idx]);
-                    if (idx == ctx->n_gen_pairs - 1) {
-                        ctx->proof[i].xcache[0] = ctx->proof[i].xcache[cache_idx];
+                if (idx % (ctx->n_gen_pairs / grouping) == 0) {
+                    const size_t abinv_idx = idx / (ctx->n_gen_pairs / grouping) - 1;
+                    size_t prev_cache_idx;
+                    if (idx == ctx->n_gen_pairs) {
+                        prev_cache_idx = POPCOUNT(idx - 1);
+                    } else {
+                        prev_cache_idx = cache_idx - 1;
                     }
-                } else if (idx == ctx->n_gen_pairs) {
-                    const size_t prev_cache_idx = POPCOUNT(idx - 1);
                     secp256k1_scalar_mul(
                         &ctx->proof[i].xcache[cache_idx],
                         &ctx->proof[i].xcache[prev_cache_idx],
-                        &ctx->proof[i].xsqinv[prev_cache_idx]
+                        &ctx->proof[i].abinv[abinv_idx]
                     );
-                } else {
+                } else if (idx < ctx->n_gen_pairs) {
                     const size_t xsq_idx = CTZ(idx);
-                    secp256k1_scalar_mul(&ctx->proof[i].xcache[cache_idx], &ctx->proof[i].xcache[cache_idx - 1], &ctx->proof[i].xsqinv[xsq_idx]);
+                    secp256k1_scalar_mul(&ctx->proof[i].xcache[cache_idx], &ctx->proof[i].xcache[cache_idx - 1], &ctx->proof[i].xsq[xsq_idx]);
+                } else {
+                    const size_t xsqinv_idx = CTZ(idx);
+                    secp256k1_scalar_mul(&ctx->proof[i].xcache[cache_idx], &ctx->proof[i].xcache[cache_idx - 1], &ctx->proof[i].xsqinv[xsqinv_idx]);
                 }
             }
             term = ctx->proof[i].xcache[cache_idx];
 
             /* When going through the G generators, compute the x-inverses as side effects */
-            if (idx < ctx->n_gen_pairs && POPCOUNT(idx) == ctx->floor_lg_gens - 1) {  /* if the scalar has only one 0, i.e. only one inverse... */
+            if (idx < ctx->n_gen_pairs / grouping && POPCOUNT(idx) == ctx->floor_lg_gens - 1) {  /* if the scalar has only one 0, i.e. only one inverse... */
                 const size_t xsqinv_idx = CTZ(~idx);
                 /* ...multiply it by the total inverse, to get x_j^-2 */
                 secp256k1_scalar_mul(&ctx->proof[i].xsqinv[xsqinv_idx], &ctx->proof[i].xcache[cache_idx], &ctx->proof[i].xsqinv_mask);
@@ -239,7 +250,7 @@ static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmul
     ecmult_data.geng = geng;
     ecmult_data.genh = genh;
     ecmult_data.n_gen_pairs = n_gens;
-    ecmult_data.floor_lg_gens = secp256k1_floor_lg(n_gens);
+    ecmult_data.floor_lg_gens = secp256k1_floor_lg(2 * n_gens / IP_AB_SCALARS);
     /* Seed RNG for per-proof randomizers */
     secp256k1_sha256_initialize(&sha256);
     for (i = 0; i < n_proofs; i++) {
@@ -254,11 +265,13 @@ static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmul
     for (i = 0; i < n_proofs; i++) {
         const unsigned char *serproof = proof[i].proof;
         unsigned char proof_commit[32];
-        secp256k1_scalar dot, a, b;
+        secp256k1_scalar dot;
+        secp256k1_scalar ab[IP_AB_SCALARS];
         secp256k1_scalar negprod;
         secp256k1_scalar x;
         int overflow;
         size_t j;
+        const size_t n_ab = 2 * n_gens < IP_AB_SCALARS ? 2 * n_gens : IP_AB_SCALARS;
 
         if (proof[i].proof_len != secp256k1_bulletproof_innerproduct_proof_length(n_gens)) {
             return 0;
@@ -278,25 +291,20 @@ static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmul
         secp256k1_sha256_finalize(&sha256, proof_commit);
         serproof += 32;
 
-        /* Special-case trivial proof */
-        if (n_gens == 0) {
-            if (!secp256k1_scalar_is_one(&dot)) {
-                return 0;
-            }
-            a = b = dot; /* Setting a = b = 1 will prevent trouble with the inversions below and dot - a*b calc below */
-        } else {
-            /* Extract a, b TODO generalize this */
-            secp256k1_scalar_set_b32(&a, serproof, &overflow);
+        /* Extract a, b */
+        for (j = 0; j < n_ab; j++) {
+            secp256k1_scalar_set_b32(&ab[j], serproof, &overflow);
             if (overflow) {
                 return 0;
             }
-            serproof += 32;
-            secp256k1_scalar_set_b32(&b, serproof, &overflow);
-            if (overflow) {
+            /* TODO our verifier currently bombs out with zeros because it uses
+             * scalar inverses gratuitously. Fix that. */
+            if (secp256k1_scalar_is_zero(&ab[j])) {
                 return 0;
             }
             serproof += 32;
         }
+        secp256k1_scalar_dot_product(&negprod, &ab[0], &ab[n_ab / 2], n_ab / 2);
 
         ecmult_data.proof[i].proof = &proof[i];
         /* set per-proof randomizer */
@@ -309,12 +317,11 @@ static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmul
             return 0;
         }
 
-        /* Compute x*(dot - a*b) for each proof */
+        /* Compute x*(dot - a*b) for each proof; add it and p_offs to the p_offs accumulator */
         secp256k1_scalar_set_b32(&x, proof_commit, &overflow);
         if (overflow || secp256k1_scalar_is_zero(&x)) {
             return 0;
         }
-        secp256k1_scalar_mul(&negprod, &a, &b);
         secp256k1_scalar_negate(&negprod, &negprod);
         secp256k1_scalar_add(&negprod, &negprod, &dot);
         secp256k1_scalar_mul(&x, &x, &negprod);
@@ -323,10 +330,23 @@ static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmul
         secp256k1_scalar_mul(&x, &x, &ecmult_data.randomizer[i]);
         secp256k1_scalar_add(&p_offs, &p_offs, &x);
 
+        /* Special-case: trivial proofs are valid iff the explicitly revealed scalars
+         *               dot to the explicitly revealed dot product. */
+        if (2 * n_gens <= IP_AB_SCALARS) {
+            if (!secp256k1_scalar_is_zero(&negprod)) {
+                return 0;
+            }
+            /* remaining data does not (and cannot) be computed for proofs with no a's or b's. */
+            if (n_gens == 0) {
+                continue;
+            }
+        }
+
         /* Compute the inverse product and the array of squares; the rest will be filled
          * in by the callback during the multiexp. */
         ecmult_data.proof[i].serialized_lr = serproof; /* bookmark L/R location in proof */
-        ecmult_data.proof[i].xcache[0] = ecmult_data.randomizer[i];
+        negprod = ab[n_ab - 1];
+        ab[n_ab - 1] = ecmult_data.randomizer[i]; /* build r * x1 * x2 * ... * xn in last slot of `ab` array */
         for (j = 0; j < ecmult_data.floor_lg_gens; j++) {
             secp256k1_scalar xi;
             const size_t lidx = 2 * j;
@@ -345,39 +365,47 @@ static int secp256k1_bulletproof_inner_product_verify_impl(const secp256k1_ecmul
             if (overflow || secp256k1_scalar_is_zero(&xi)) {
                 return 0;
             }
-            secp256k1_scalar_mul(&ecmult_data.proof[i].xcache[0], &ecmult_data.proof[i].xcache[0], &xi);
+            secp256k1_scalar_mul(&ab[n_ab - 1], &ab[n_ab - 1], &xi);
             secp256k1_scalar_sqr(&ecmult_data.proof[i].xsq[j], &xi);
         }
-        /* Compute (-a * r * x1 * ... * xn)^-1 which will be used to mask out individual x_i^-2's */
-        secp256k1_scalar_negate(&ecmult_data.proof[i].xsqinv_mask, &a);
-        secp256k1_scalar_mul(&ecmult_data.proof[i].xsqinv_mask, &ecmult_data.proof[i].xsqinv_mask, &ecmult_data.proof[i].xcache[0]);
-        secp256k1_scalar_inverse_var(&ecmult_data.proof[i].xsqinv_mask, &ecmult_data.proof[i].xsqinv_mask);
+        /* Compute inverse of all a's and b's, except the last b whose inverse is not needed.
+         * Also compute the inverse of (-r * x1 * ... * xn) which will be needed */
+        secp256k1_scalar_inverse_all_var(ecmult_data.proof[i].abinv, ab, n_ab);
+        ab[n_ab - 1] = negprod;
 
-        /* Extract a*b^-1 which is used to switch from multiplication by b to multiplication by a. Use negprod as dummy. */
-        secp256k1_scalar_mul(&negprod, &ecmult_data.proof[i].xsqinv_mask, &ecmult_data.proof[i].xcache[0]);  /* -a^-1 */
-        secp256k1_scalar_mul(&ecmult_data.proof[i].xsqinv[j], &negprod, &b);  /* -a^-1*b */
-        secp256k1_scalar_negate(&ecmult_data.proof[i].xsqinv[j], &ecmult_data.proof[i].xsqinv[j]); /* a^-1*b */
+        /* Compute (-a0 * r * x1 * ... * xn)^-1 which will be used to mask out individual x_i^-2's */
+        secp256k1_scalar_negate(&ecmult_data.proof[i].xsqinv_mask, &ecmult_data.proof[i].abinv[0]);
+        secp256k1_scalar_mul(&ecmult_data.proof[i].xsqinv_mask, &ecmult_data.proof[i].xsqinv_mask, &ecmult_data.proof[i].abinv[n_ab - 1]);
 
-        /* Extract -a * r * (x1 * ... * xn)^-1 which is our first coefficient */
-        secp256k1_scalar_mul(&negprod, &ecmult_data.randomizer[i], &a); /* r*a */
+        /* Compute each scalar times the previous' inverse, which is used to switch between a's and b's */
+        for (j = n_ab - 1; j > 0; j--) {
+            size_t prev_idx;
+            if (j == n_ab / 2) {
+                prev_idx = j - 1; /* we go from a_n to b_0  */
+            } else {
+                prev_idx = j & (j - 1); /* but from a_i' to a_i, where i' is i with its lowest set bit unset */
+            }
+            secp256k1_scalar_mul(
+                &ecmult_data.proof[i].abinv[j - 1],
+                &ecmult_data.proof[i].abinv[prev_idx],
+                &ab[j]
+            );
+        }
+
+        /* Extract -a0 * r * (x1 * ... * xn)^-1 which is our first coefficient. Use negprod as a dummy */
+        secp256k1_scalar_mul(&negprod, &ecmult_data.randomizer[i], &ab[0]); /* r*a */
         secp256k1_scalar_sqr(&negprod, &negprod); /* (r*a)^2 */
         secp256k1_scalar_mul(&ecmult_data.proof[i].xcache[0], &ecmult_data.proof[i].xsqinv_mask, &negprod);  /* -a * r * (x1 * x2 * ... * xn)^-1 */
     }
 
+    if (n_proofs == 0) {
+        return 1;
+    }
     /* Do the multiexp */
     if (secp256k1_ecmult_multi_var(ecmult_ctx, scratch, &r, &p_offs, secp256k1_bulletproof_innerproduct_vfy_ecmult_callback, (void *) &ecmult_data, total_n_points) != 1) {
         return 0;
     }
     return secp256k1_gej_is_infinity(&r);
-}
-
-static void secp256k1_scalar_dot_product(secp256k1_scalar *r, const secp256k1_scalar *a, const secp256k1_scalar *b, size_t n) {
-    secp256k1_scalar_clear(r);
-    while(n--) {
-        secp256k1_scalar term;
-        secp256k1_scalar_mul(&term, &a[n], &b[n]);
-        secp256k1_scalar_add(r, r, &term);
-    }
 }
 
 typedef struct {
@@ -472,7 +500,6 @@ static int secp256k1_bulletproof_innerproduct_pf_ecmult_callback_r(secp256k1_sca
 }
 
 /* These proofs are not zero-knowledge. There is no need to worry about constant timeness.
- * Having said that, we avoid using ecmult_multi because it'd clobber our scratch space.
  * `commit_inp` must contain 256 bits of randomness, it is used immediately as a randomizer.
  */
 static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult_context *ecmult_ctx, secp256k1_scratch *scratch, unsigned char *proof, size_t *proof_len, const secp256k1_ge *geng, const secp256k1_ge *genh, const secp256k1_scalar *yinv, const size_t n, secp256k1_ecmult_multi_callback *cb, void *cb_data, const unsigned char *commit_inp) {
@@ -489,6 +516,7 @@ static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult
     size_t pt_idx = 0;
     secp256k1_scalar dot;
     secp256k1_bulletproof_innerproduct_pf_ecmult_context pfdata;
+    size_t half_n_ab = n < IP_AB_SCALARS / 2 ? n : IP_AB_SCALARS / 2;
 
     if (*proof_len < secp256k1_bulletproof_innerproduct_proof_length(n)) {
         return 0;
@@ -496,24 +524,24 @@ static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult
     *proof_len = secp256k1_bulletproof_innerproduct_proof_length(n);
 
     /* Special-case lengths 0 and 1 whose proofs are just expliict lists of scalars */
-    switch (n) {
-    case 0:
-        secp256k1_scalar_set_int(&dot, 1);
+    if (n <= IP_AB_SCALARS / 2) {
+        secp256k1_scalar a[IP_AB_SCALARS / 2];
+        secp256k1_scalar b[IP_AB_SCALARS / 2];
+
+        for (i = 0; i < n; i++) {
+            cb(&a[i], NULL, 2*i, cb_data);
+            cb(&b[i], NULL, 2*i+1, cb_data);
+        }
+
+        secp256k1_scalar_dot_product(&dot, a, b, n);
         secp256k1_scalar_get_b32(proof, &dot);
-        *proof_len = 32;
+
+        for (i = 0; i < n; i++) {
+            secp256k1_scalar_get_b32(&proof[32 * (i + 1)], &a[i]);
+            secp256k1_scalar_get_b32(&proof[32 * (i + n + 1)], &b[i]);
+        }
+        VERIFY_CHECK(*proof_len == 32 * (2 * n + 1));
         return 1;
-    case 1: {
-        secp256k1_ge tmpge;
-        secp256k1_scalar a, b;
-        cb(&a, &tmpge, 0, cb_data);
-        cb(&b, &tmpge, 1, cb_data);
-        secp256k1_scalar_mul(&dot, &a, &b);
-        secp256k1_scalar_get_b32(proof, &dot);
-        secp256k1_scalar_get_b32(&proof[32], &a);
-        secp256k1_scalar_get_b32(&proof[64], &b);
-        *proof_len = 96;
-        return 1;
-    }
     }
 
     /* setup for nontrivial proofs */
@@ -564,7 +592,7 @@ static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult
     }
 
     /* Protocol 1: Iterate, halving vector size until it is 1 */
-    for (halfwidth = n / 2, i = 0; halfwidth > 0; halfwidth /= 2, i++) {
+    for (halfwidth = n / 2, i = 0; halfwidth > IP_AB_SCALARS / 4; halfwidth /= 2, i++) {
         secp256k1_gej tmplj, tmprj;
         secp256k1_scalar tmps;
         size_t j;
@@ -614,6 +642,7 @@ static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult
             secp256k1_scalar_mul(&b_arr[2*j], &b_arr[2*j], &pfdata.xinv[i]);
             secp256k1_scalar_mul(&tmps, &b_arr[2*j + 1], &pfdata.x[i]);
             secp256k1_scalar_add(&b_arr[j], &b_arr[2*j], &tmps);
+
         }
 
         /* Explicit odd-recursion-level scalars */
@@ -626,14 +655,18 @@ static int secp256k1_bulletproof_inner_product_prove_impl(const secp256k1_ecmult
     }
 
     /* Final a/b values */
-    secp256k1_scalar_get_b32(proof, &a_arr[0]);
-    proof += 32;
-    secp256k1_scalar_get_b32(proof, &b_arr[0]);
-    proof += 32;
+    VERIFY_CHECK(halfwidth == IP_AB_SCALARS / 4);
+    for (i = 0; i < half_n_ab; i++) {
+        secp256k1_scalar_get_b32(&proof[32 * i], &a_arr[i]);
+        secp256k1_scalar_get_b32(&proof[32 * (i + half_n_ab)], &b_arr[i]);
+    }
+    proof += 64 * half_n_ab;
     secp256k1_bulletproof_serialize_points(proof, out_pt, pt_idx);
 
     secp256k1_scratch_space_destroy(myscr);
     return 1;
 }
+
+#undef IP_AB_SCALARS
 
 #endif

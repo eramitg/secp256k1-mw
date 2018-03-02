@@ -30,6 +30,42 @@ SECP256K1_INLINE static size_t secp256k1_floor_lg(size_t n) {
     }
 }
 
+static void secp256k1_scalar_dot_product(secp256k1_scalar *r, const secp256k1_scalar *a, const secp256k1_scalar *b, size_t n) {
+    secp256k1_scalar_clear(r);
+    while(n--) {
+        secp256k1_scalar term;
+        secp256k1_scalar_mul(&term, &a[n], &b[n]);
+        secp256k1_scalar_add(r, r, &term);
+    }
+}
+
+static void secp256k1_scalar_inverse_all_var(secp256k1_scalar *r, const secp256k1_scalar *a, size_t len) {
+    secp256k1_scalar u;
+    size_t i;
+    if (len < 1) {
+        return;
+    }
+
+    VERIFY_CHECK((r + len <= a) || (a + len <= r));
+
+    r[0] = a[0];
+
+    i = 0;
+    while (++i < len) {
+        secp256k1_scalar_mul(&r[i], &r[i - 1], &a[i]);
+    }
+
+    secp256k1_scalar_inverse_var(&u, &r[--i]);
+
+    while (i > 0) {
+        size_t j = i--;
+        secp256k1_scalar_mul(&r[j], &r[i], &u);
+        secp256k1_scalar_mul(&u, &u, &a[j]);
+    }
+
+    r[0] = u;
+}
+
 SECP256K1_INLINE static void secp256k1_bulletproof_genrand_pair(secp256k1_rfc6979_hmac_sha256 *rng, secp256k1_scalar *out1, secp256k1_scalar *out2) {
     unsigned char tmp[32];
     int overflow;
