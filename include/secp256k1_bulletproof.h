@@ -79,7 +79,8 @@ SECP256K1_API int secp256k1_bulletproof_circuit_prove(
     unsigned char *proof,
     size_t *plen,
     secp256k1_bulletproof_circuit *circ,
-    unsigned char *nonce
+    unsigned char *nonce,
+    const void *generators
 ) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(4) SECP256K1_ARG_NONNULL(5) SECP256K1_ARG_NONNULL(6);
 
 SECP256K1_API secp256k1_bulletproof_circuit *secp256k1_circuit_dummy(
@@ -93,16 +94,18 @@ SECP256K1_API int secp256k1_bulletproof_circuit_prove_dummy(
     unsigned char *proof,
     size_t *plen,
     secp256k1_bulletproof_circuit *circ,
-    unsigned char *nonce
-) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(4) SECP256K1_ARG_NONNULL(5) SECP256K1_ARG_NONNULL(6);
+    unsigned char *nonce,
+    const void *generators
+) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(4) SECP256K1_ARG_NONNULL(5) SECP256K1_ARG_NONNULL(6) SECP256K1_ARG_NONNULL(7);
 
 SECP256K1_API int secp256k1_bulletproof_circuit_verify(
     const secp256k1_context* ctx,
     secp256k1_scratch_space *scratch,
     const unsigned char *proof,
     size_t plen,
-    secp256k1_bulletproof_circuit *circ
-) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(5);
+    secp256k1_bulletproof_circuit *circ,
+    const void *generators
+) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(5) SECP256K1_ARG_NONNULL(6);
 
 SECP256K1_API int secp256k1_bulletproof_circuit_verify_multi(
     const secp256k1_context* ctx,
@@ -110,9 +113,14 @@ SECP256K1_API int secp256k1_bulletproof_circuit_verify_multi(
     const unsigned char *proof,
     size_t plen,
     size_t n_proofs,
-    secp256k1_bulletproof_circuit **circ
-) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(6);
+    secp256k1_bulletproof_circuit **circ,
+    const void *generators
+) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(6) SECP256K1_ARG_NONNULL(7);
 
+SECP256K1_API void *secp256k1_bulletproof_allocate_gens(
+    const secp256k1_context *ctx,
+    size_t n_gens
+) SECP256K1_ARG_NONNULL(1);
 
 # ifdef __cplusplus
 }

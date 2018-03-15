@@ -19,6 +19,7 @@ typedef struct {
     secp256k1_pedersen_commitment *commit;
     secp256k1_bulletproof_circuit *circ;
     secp256k1_bulletproof_circuit *circ2;
+    void *gens;
     size_t *value;
     unsigned char nonce[32];
     const unsigned char **blind;
@@ -80,16 +81,16 @@ static void bench_bulletproof_circuit_setup(void* arg) {
     data->plen = sizeof(data->proof);
     circ_ptr[0] = data->circ;
     circ_ptr[1] = data->circ2;
-    CHECK(secp256k1_bulletproof_circuit_prove_dummy(data->ctx, data->scratch, data->proof, &data->plen, data->circ, data->nonce) == 1);
-    CHECK(secp256k1_bulletproof_circuit_verify(data->ctx, data->scratch, data->proof, data->plen, data->circ) == 1);
-    CHECK(secp256k1_bulletproof_circuit_verify_multi(data->ctx, data->scratch, data->proof, data->plen, 2, circ_ptr) == 1);
+    CHECK(secp256k1_bulletproof_circuit_prove_dummy(data->ctx, data->scratch, data->proof, &data->plen, data->circ, data->nonce, data->gens) == 1);
+    CHECK(secp256k1_bulletproof_circuit_verify(data->ctx, data->scratch, data->proof, data->plen, data->circ, data->gens) == 1);
+    CHECK(secp256k1_bulletproof_circuit_verify_multi(data->ctx, data->scratch, data->proof, data->plen, 2, circ_ptr, data->gens) == 1);
 }
 
 static void bench_bulletproof_jubjub_prove(void* arg) {
     bench_bulletproof_t *data = (bench_bulletproof_t*)arg;
     size_t i;
     for (i = 0; i < 1; i++) {
-        CHECK(secp256k1_bulletproof_circuit_prove_dummy(data->ctx, data->scratch, data->proof, &data->plen, data->circ, data->nonce) == 1);
+        CHECK(secp256k1_bulletproof_circuit_prove_dummy(data->ctx, data->scratch, data->proof, &data->plen, data->circ, data->nonce, data->gens) == 1);
     }
 }
 
@@ -97,7 +98,7 @@ static void bench_bulletproof_jubjub_verify(void* arg) {
     bench_bulletproof_t *data = (bench_bulletproof_t*)arg;
     size_t i;
     for (i = 0; i < 5; i++) {
-        CHECK(secp256k1_bulletproof_circuit_verify(data->ctx, data->scratch, data->proof, data->plen, data->circ) == 1);
+        CHECK(secp256k1_bulletproof_circuit_verify(data->ctx, data->scratch, data->proof, data->plen, data->circ, data->gens) == 1);
     }
 }
 
@@ -108,7 +109,7 @@ static void bench_bulletproof_jubjub_verify_plus1(void* arg) {
     circ_ptr[0] = data->circ;
     circ_ptr[1] = data->circ2;
     for (i = 0; i < 5; i++) {
-        CHECK(secp256k1_bulletproof_circuit_verify_multi(data->ctx, data->scratch, data->proof, data->plen, 2, circ_ptr) == 1);
+        CHECK(secp256k1_bulletproof_circuit_verify_multi(data->ctx, data->scratch, data->proof, data->plen, 2, circ_ptr, data->gens) == 1);
     }
 }
 
@@ -180,7 +181,7 @@ static void run_test(bench_bulletproof_t *data, size_t nbits, size_t n_commits) 
     run_benchmark(str, bench_bulletproof_verify, bench_bulletproof_setup, bench_bulletproof_teardown, (void *)data, 10, 100);
 }
 
-#define CIRCUIT_GATES_BASE 64
+#define CIRCUIT_GATES_BASE 64 * 8
 static void run_test_circuit(bench_bulletproof_t *data, size_t ngates) {
     char str[64];
 
@@ -206,6 +207,9 @@ int main(void) {
 
     data.ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
     data.scratch = secp256k1_scratch_space_create(data.ctx, 10000000, 10000000);  /* 10M should be waay overkill */
+printf("allocating %d gens...\n", (int) (CIRCUIT_GATES_BASE * 1024));
+    data.gens = secp256k1_bulletproof_allocate_gens(data.ctx, CIRCUIT_GATES_BASE * 1024);
+puts("done");
 
     run_test_circuit(&data, 1);
     run_test_circuit(&data, 2);
@@ -240,6 +244,7 @@ int main(void) {
     run_test(&data, 64, 16384);
     run_test(&data, 64, 32768);
 
+    free(data.gens);
     secp256k1_scratch_space_destroy(data.scratch);
     secp256k1_context_destroy(data.ctx);
     return 0;

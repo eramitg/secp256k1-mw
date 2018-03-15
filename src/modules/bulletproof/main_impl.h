@@ -168,11 +168,33 @@ secp256k1_bulletproof_circuit *secp256k1_circuit_dummy(const secp256k1_context *
     return ret;
 }
 
-int secp256k1_bulletproof_circuit_prove_dummy(const secp256k1_context* ctx, secp256k1_scratch_space *scratch, unsigned char *proof, size_t *plen, secp256k1_bulletproof_circuit *circ, unsigned char *nonce) {
+void *secp256k1_bulletproof_allocate_gens(const secp256k1_context *ctx, size_t n_gens) {
+    size_t i;
+    secp256k1_ge *gens = (secp256k1_ge *) checked_malloc(&ctx->error_callback, sizeof(secp256k1_ge) * n_gens);
+
+    for (i = 0; i < n_gens; i++) {
+       secp256k1_generator tmpgen;
+       unsigned char commit[32] = { 0 };
+       commit[0] = i;
+       commit[1] = i >> 8;
+       commit[2] = i >> 16;
+       commit[3] = i >> 24;
+       commit[4] = i >> 32;
+       commit[5] = i >> 40;
+
+       CHECK(secp256k1_generator_generate(ctx, &tmpgen, commit));
+       secp256k1_generator_load(&gens[i], &tmpgen);
+    }
+
+    return (void *) gens;
+}
+
+int secp256k1_bulletproof_circuit_prove_dummy(const secp256k1_context* ctx, secp256k1_scratch_space *scratch, unsigned char *proof, size_t *plen, secp256k1_bulletproof_circuit *circ, unsigned char *nonce, const void *generators) {
     int result;
     secp256k1_scalar *al = (secp256k1_scalar *)checked_malloc(&ctx->error_callback, circ->n_gates * sizeof(*al));
     secp256k1_scalar *ar = (secp256k1_scalar *)checked_malloc(&ctx->error_callback, circ->n_gates * sizeof(*al));
     secp256k1_scalar *ao = (secp256k1_scalar *)checked_malloc(&ctx->error_callback, circ->n_gates * sizeof(*al));
+    secp256k1_ge *gens = (secp256k1_ge *) generators;
 
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(scratch != NULL);
@@ -193,7 +215,7 @@ int secp256k1_bulletproof_circuit_prove_dummy(const secp256k1_context* ctx, secp
         NULL, NULL, 0,
         &secp256k1_ge_const_g2,
         circ,
-        &secp256k1_ge_const_gi[0], &secp256k1_ge_const_gi[32768],
+        &gens[0], &gens[circ->n_gates],
         nonce,
         NULL, 0
     );
@@ -210,7 +232,8 @@ void secp256k1_circuit_destroy(const secp256k1_context *ctx, secp256k1_bulletpro
     secp256k1_circuit_destroy_impl(circ);
 }
 
-int secp256k1_bulletproof_circuit_prove(const secp256k1_context* ctx, secp256k1_scratch_space *scratch, unsigned char *proof, size_t *plen, secp256k1_bulletproof_circuit *circ, unsigned char *nonce) {
+int secp256k1_bulletproof_circuit_prove(const secp256k1_context* ctx, secp256k1_scratch_space *scratch, unsigned char *proof, size_t *plen, secp256k1_bulletproof_circuit *circ, unsigned char *nonce, const void *generators) {
+    secp256k1_ge *gens = (secp256k1_ge *) generators;
 #include "circuits/jubjub-3072.assn"
 
     VERIFY_CHECK(ctx != NULL);
@@ -228,13 +251,15 @@ int secp256k1_bulletproof_circuit_prove(const secp256k1_context* ctx, secp256k1_
         NULL, NULL, 0,
         &secp256k1_ge_const_g2,
         circ,
-        &secp256k1_ge_const_gi[0], &secp256k1_ge_const_gi[32768],
+        &gens[0], &gens[circ->n_gates],
         nonce,
         NULL, 0
     );
 }
 
-int secp256k1_bulletproof_circuit_verify(const secp256k1_context* ctx, secp256k1_scratch_space *scratch, const unsigned char *proof, size_t plen, secp256k1_bulletproof_circuit *circ) {
+int secp256k1_bulletproof_circuit_verify(const secp256k1_context* ctx, secp256k1_scratch_space *scratch, const unsigned char *proof, size_t plen, secp256k1_bulletproof_circuit *circ, const void *generators) {
+    secp256k1_ge *gens = (secp256k1_ge *) generators;
+
     VERIFY_CHECK(ctx != NULL);
     ARG_CHECK(scratch != NULL);
     ARG_CHECK(proof != NULL);
@@ -247,12 +272,13 @@ int secp256k1_bulletproof_circuit_verify(const secp256k1_context* ctx, secp256k1
         NULL, 0,
         &secp256k1_ge_const_g2,
         &circ,
-        &secp256k1_ge_const_gi[0], &secp256k1_ge_const_gi[32768],
+        &gens[0], &gens[circ->n_gates],
         NULL, 0
     );
 }
 
-int secp256k1_bulletproof_circuit_verify_multi(const secp256k1_context* ctx, secp256k1_scratch_space *scratch, const unsigned char *proof, size_t plen, size_t n_proofs, secp256k1_bulletproof_circuit **circ) {
+int secp256k1_bulletproof_circuit_verify_multi(const secp256k1_context* ctx, secp256k1_scratch_space *scratch, const unsigned char *proof, size_t plen, size_t n_proofs, secp256k1_bulletproof_circuit **circ, const void *generators) {
+    secp256k1_ge *gens = (secp256k1_ge *) generators;
     const unsigned char *proof_ptr[MAX_BATCH_QTY];
     size_t plens[MAX_BATCH_QTY];
     size_t i;
@@ -274,7 +300,7 @@ int secp256k1_bulletproof_circuit_verify_multi(const secp256k1_context* ctx, sec
         NULL, 0,
         &secp256k1_ge_const_g2,
         circ,
-        &secp256k1_ge_const_gi[0], &secp256k1_ge_const_gi[32768],
+        &gens[0], &gens[circ[0]->n_gates],
         NULL, 0
     );
 }
