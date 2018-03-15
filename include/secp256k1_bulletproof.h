@@ -82,6 +82,20 @@ SECP256K1_API int secp256k1_bulletproof_circuit_prove(
     unsigned char *nonce
 ) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(4) SECP256K1_ARG_NONNULL(5) SECP256K1_ARG_NONNULL(6);
 
+SECP256K1_API secp256k1_bulletproof_circuit *secp256k1_circuit_dummy(
+    const secp256k1_context *ctx,
+    size_t n_gates
+) SECP256K1_ARG_NONNULL(1);
+
+SECP256K1_API int secp256k1_bulletproof_circuit_prove_dummy(
+    const secp256k1_context* ctx,
+    secp256k1_scratch_space *scratch,
+    unsigned char *proof,
+    size_t *plen,
+    secp256k1_bulletproof_circuit *circ,
+    unsigned char *nonce
+) SECP256K1_ARG_NONNULL(1) SECP256K1_ARG_NONNULL(2) SECP256K1_ARG_NONNULL(3) SECP256K1_ARG_NONNULL(4) SECP256K1_ARG_NONNULL(5) SECP256K1_ARG_NONNULL(6);
+
 SECP256K1_API int secp256k1_bulletproof_circuit_verify(
     const secp256k1_context* ctx,
     secp256k1_scratch_space *scratch,

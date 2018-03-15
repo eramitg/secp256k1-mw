@@ -316,9 +316,9 @@ void test_bulletproof_circuit(const secp256k1_ge *geng, const secp256k1_ge *genh
     const unsigned char *proof_ptr = proof;
     size_t plen = sizeof(proof);
     secp256k1_scalar one;
-    secp256k1_scalar al[2];
-    secp256k1_scalar ar[2];
-    secp256k1_scalar ao[2];
+    secp256k1_scalar al[1024];
+    secp256k1_scalar ar[1024];
+    secp256k1_scalar ao[1024];
     secp256k1_scratch *scratch = secp256k1_scratch_space_create(ctx, 1000000, 100000000);
 #include "circuits/jubjub-12.circuit"
 #include "circuits/jubjub-12.assn"
@@ -326,6 +326,7 @@ void test_bulletproof_circuit(const secp256k1_ge *geng, const secp256k1_ge *genh
     const char inv_17_19_circ[] = "2,0,4; L0 = 17; 2*L1 - L0 = 21; O0 = 1; O1 = 1;";
     secp256k1_bulletproof_circuit *simple = secp256k1_parse_circuit(ctx, inv_17_19_circ);
     secp256k1_bulletproof_circuit *incl = secp256k1_parse_circuit(ctx, incl_desc);
+    secp256k1_bulletproof_circuit *dummy = secp256k1_circuit_dummy(ctx, 1024);
 
 secp256k1_scalar challenge;
 secp256k1_scalar answer;
@@ -395,8 +396,37 @@ secp256k1_scalar_inverse(&answer, &challenge);
         NULL, 0
     ));
 
+    plen = 2000;
+    memset(ar, 0, sizeof(ar));
+    memset(al, 0, sizeof(ar));
+    memset(ao, 0, sizeof(ar));
+    CHECK(secp256k1_bulletproof_relation66_prove_impl(
+        &ctx->ecmult_ctx,
+        scratch,
+        proof, &plen,
+        al, ar, ao, dummy->n_gates,
+        NULL, NULL, 0,
+        &secp256k1_ge_const_g2,
+        dummy,
+        geng, genh,
+        nonce,
+        NULL, 0
+    ));
+
+    CHECK(secp256k1_bulletproof_relation66_verify_impl(
+        &ctx->ecmult_ctx,
+        scratch,
+        &proof_ptr, &plen, 1,
+        NULL, 0,
+        &secp256k1_ge_const_g2,
+        &dummy,
+        geng, genh,
+        NULL, 0
+    ));
+
     secp256k1_circuit_destroy(ctx, simple);
     secp256k1_circuit_destroy(ctx, incl);
+    secp256k1_circuit_destroy(ctx, dummy);
     secp256k1_scratch_destroy(scratch);
 }
 
