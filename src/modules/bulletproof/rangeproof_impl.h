@@ -372,7 +372,6 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     secp256k1_scalar alpha, rho;
     secp256k1_scalar t0, t1, t2;
     secp256k1_scalar tau1, tau2, taux, mu;
-    secp256k1_gej tj[2];      /* T_1, T_2 */
     secp256k1_scalar y;
     secp256k1_scalar z, zsq;
     secp256k1_scalar x, xsq;
@@ -516,11 +515,18 @@ static int secp256k1_bulletproof_rangeproof_prove_impl(const secp256k1_ecmult_ge
     secp256k1_scalar_add(&t2, &t2, &t1);
 
     /* Compute Ti = t_i*A + tau_i*G for i = 1,2 */
-    secp256k1_gej_set_ge(&tmpj, genp);
-    secp256k1_ecmult(ecmult_ctx, &tj[0], &tmpj, &t1, &tau1);
-    secp256k1_ecmult(ecmult_ctx, &tj[1], &tmpj, &t2, &tau2);
-    secp256k1_ge_set_gej(&out_pt[2], &tj[0]);
-    secp256k1_ge_set_gej(&out_pt[3], &tj[1]);
+    /* TODO surely we can improve this */
+    secp256k1_ecmult_const(&tmpj, genp, &t1, 256);
+    secp256k1_ge_set_gej(&out_pt[2], &tmpj);
+    secp256k1_ecmult_const(&tmpj, &secp256k1_ge_const_g, &tau1, 256);
+    secp256k1_gej_add_ge(&tmpj, &tmpj, &out_pt[2]);
+    secp256k1_ge_set_gej(&out_pt[2], &tmpj);
+
+    secp256k1_ecmult_const(&tmpj, genp, &t2, 256);
+    secp256k1_ge_set_gej(&out_pt[3], &tmpj);
+    secp256k1_ecmult_const(&tmpj, &secp256k1_ge_const_g, &tau2, 256);
+    secp256k1_gej_add_ge(&tmpj, &tmpj, &out_pt[3]);
+    secp256k1_ge_set_gej(&out_pt[3], &tmpj);
 
     /* get challenge x */
     secp256k1_bulletproof_update_commit(commit, &out_pt[2], &out_pt[3]);
